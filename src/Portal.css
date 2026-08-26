@@ -1,0 +1,52 @@
+.portal-shell { background: #eef0e8; min-height: 100vh; overflow: auto; }
+.portal-header { align-items: center; background: #f7f6f1; border-bottom: 1px solid #ccd1c8; display: flex; height: 76px; justify-content: space-between; padding: 0 max(24px, calc((100% - 1160px) / 2)); }
+.portal-back, .admin-nav a { color: #526159; font-size: 12px; font-weight: 700; }
+.portal-kicker { color: #b95842; font-family: 'DM Mono', monospace; font-size: 10px; letter-spacing: .08em; text-transform: uppercase; }
+.auth-layout { display: grid; grid-template-columns: minmax(320px, 1fr) minmax(420px, 560px); margin: auto; max-width: 1160px; min-height: calc(100vh - 76px); }
+.auth-intro { align-self: center; padding: 70px 70px 70px 0; }
+.auth-intro h1, .resident-home h1, .admin-main h1 { color: #294b3c; font-family: 'Fraunces', serif; font-size: 61px; font-weight: 400; letter-spacing: 0; line-height: .95; margin: 18px 0 28px; }
+.auth-intro h1 i { color: #b95842; }
+.auth-intro > p:last-child, .portal-lead { color: #68736c; font-size: 14px; line-height: 1.7; max-width: 390px; }
+.auth-panel { align-self: center; background: #f7f6f1; border: 1px solid #d4d8d0; padding: 34px; }
+.auth-tabs { border-bottom: 1px solid #ccd1c8; display: grid; grid-template-columns: 1fr 1fr; margin-bottom: 30px; }
+.auth-tabs button { background: none; border: 0; color: #7b837d; cursor: pointer; font: inherit; font-size: 13px; font-weight: 700; padding: 0 0 14px; position: relative; }
+.auth-tabs button.active { color: #294b3c; }
+.auth-tabs button.active::after { background: #b95842; bottom: -1px; content: ''; height: 2px; left: 0; position: absolute; width: 100%; }
+.auth-panel form { display: grid; gap: 18px; }
+.auth-panel label { color: #3a4b43; display: grid; font-size: 11px; font-weight: 700; gap: 7px; }
+.auth-panel label span { color: #858d87; font-weight: 400; }
+.auth-panel input, .auth-panel select { background: #fff; border: 1px solid #c8cec5; border-radius: 0; color: #26352f; font: inherit; font-size: 14px; height: 44px; min-width: 0; padding: 0 12px; width: 100%; }
+.auth-panel input:focus, .auth-panel select:focus { border-color: #b95842; outline: 2px solid rgba(185,88,66,.16); }
+.field-row { display: grid; gap: 14px; grid-template-columns: 1fr 1fr; }
+.primary-button, .secondary-button { border: 0; cursor: pointer; font: inherit; font-size: 12px; font-weight: 700; min-height: 44px; padding: 0 18px; }
+.primary-button { background: #294b3c; color: #fff; margin-top: 4px; }
+.primary-button:disabled { cursor: wait; opacity: .6; }
+.turnstile-slot { min-height: 65px; overflow: hidden; }
+.secondary-button { background: transparent; border: 1px solid #aeb7ae; color: #294b3c; }
+.form-error, .form-notice { font-size: 12px; line-height: 1.5; margin: 0 0 20px; padding: 12px; }
+.form-error { background: #f5e4df; color: #843b2b; }
+.form-notice { background: #e4ece4; color: #294b3c; }
+.resident-home { display: grid; gap: 70px; grid-template-columns: 1fr 370px; margin: auto; max-width: 1160px; padding: 110px 0; }
+.resident-status { align-self: start; border-top: 1px solid #b9c0b8; display: grid; gap: 14px 20px; grid-template-columns: 90px 1fr; padding-top: 22px; }
+.resident-status span { color: #7a837d; font-size: 11px; }
+.resident-status strong { color: #294b3c; font-size: 13px; }
+.resident-status a, .resident-status button { grid-column: 1 / -1; margin-top: 8px; text-align: center; }
+.resident-status a { background: #294b3c; color: #fff; font-size: 12px; font-weight: 700; padding: 15px; }
+.admin-nav { display: flex; gap: 26px; }
+.admin-main { margin: auto; max-width: 1160px; padding: 70px 0; }
+.admin-main > header { align-items: end; display: flex; justify-content: space-between; margin-bottom: 40px; }
+.admin-main h1 { font-size: 48px; margin-bottom: 0; }
+.admin-main > header > p { color: #727d76; font-size: 12px; }
+.account-table { border-top: 1px solid #aeb7ae; }
+.account-row { align-items: center; border-bottom: 1px solid #d1d6ce; display: grid; gap: 18px; grid-template-columns: 1.2fr 1fr 110px 200px; min-height: 76px; padding: 12px 10px; }
+.account-head { color: #757e78; font-family: 'DM Mono', monospace; font-size: 9px; min-height: 42px; text-transform: uppercase; }
+.account-row span { font-size: 13px; }
+.account-row strong, .account-row small { display: block; }
+.account-row small { color: #77817a; font-size: 11px; margin-top: 4px; }
+.status { font-family: 'DM Mono', monospace; font-size: 9px !important; text-transform: uppercase; }
+.status-active { color: #2d684b; }.status-pending { color: #97692d; }.status-rejected, .status-suspended { color: #9a4033; }
+.account-actions { display: flex; gap: 8px; justify-content: flex-end; }
+.account-actions button { background: #294b3c; border: 1px solid #294b3c; color: #fff; cursor: pointer; font: inherit; font-size: 10px; font-weight: 700; padding: 9px 11px; }
+.account-actions .quiet-action { background: transparent; color: #803b31; }
+.empty-state { color: #77817a; font-size: 13px; padding: 40px 10px; }
+@media (max-width: 760px) { .portal-header { height: 68px; padding: 0 20px; }.portal-back { font-size: 10px; }.auth-layout { display: block; min-height: 0; }.auth-intro { padding: 58px 20px 34px; }.auth-intro h1 { font-size: 46px; }.auth-panel { border-left: 0; border-right: 0; padding: 28px 20px 45px; }.field-row { display: block; }.field-row label + label { margin-top: 18px; }.resident-home { display: block; padding: 65px 20px; }.resident-home h1 { font-size: 46px; }.resident-status { margin-top: 50px; }.admin-nav a:first-child { display: none; }.admin-main { padding: 45px 20px; }.admin-main > header { align-items: start; display: block; }.admin-main h1 { font-size: 38px; }.admin-main > header > p { margin-top: 16px; }.account-head { display: none; }.account-row { align-items: start; gap: 12px; grid-template-columns: 1fr auto; padding: 18px 4px; }.account-row > span:nth-child(2), .account-actions { grid-column: 1 / -1; }.account-actions { justify-content: flex-start; } }
