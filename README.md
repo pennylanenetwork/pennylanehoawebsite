@@ -21,7 +21,7 @@ npm run cf:deploy:dry
 
 ## Cloudflare deployment
 
-The production site is deployed as a Cloudflare Worker with static assets. Authenticate Wrangler once, then deploy:
+The production site is deployed as a Cloudflare Worker with static assets. Pushes to `main` are built and deployed automatically by Cloudflare Workers Builds. To deploy manually, authenticate Wrangler once, then run:
 
 ```sh
 npx wrangler login
