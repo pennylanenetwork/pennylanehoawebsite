@@ -1,11 +1,23 @@
 {
   "$schema": "./node_modules/wrangler/config-schema.json",
   "name": "penny-lane-hoa-website",
+  "main": "./worker/index.js",
   "compatibility_date": "2026-08-25",
+  "compatibility_flags": ["nodejs_compat"],
   "assets": {
     "directory": "./dist",
-    "not_found_handling": "single-page-application"
+    "not_found_handling": "single-page-application",
+    "binding": "ASSETS",
+    "run_worker_first": ["/api/*"]
   },
+  "d1_databases": [
+    {
+      "binding": "DB",
+      "database_name": "penny-lane-hoa",
+      "database_id": "6a94dac5-60bb-4704-8e19-f29f46abb779",
+      "migrations_dir": "./migrations"
+    }
+  ],
   "observability": {
     "enabled": true
   }

@@ -29,3 +29,15 @@ npm run cf:deploy
 ```
 
 Cloudflare resource bindings for D1, R2, email, and payment secrets will be added as the resident portal and administration features are implemented. Local secrets belong in `.dev.vars`, which is excluded from Git.
+
+## Database migrations
+
+D1 schema changes are versioned in `migrations/`. Apply and verify migrations locally before applying them to production:
+
+```sh
+npm run db:migrate:local
+npm run cf:dev
+npm run db:migrate:remote
+```
+
+The initial migration creates HOA phases and 101 active properties. Property write operations will be added only after administrator authentication and authorization are available.
