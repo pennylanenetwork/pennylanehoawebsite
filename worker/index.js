@@ -364,6 +364,7 @@ async function currentUser(request, env) {
     SELECT users.id, users.email, users.first_name AS firstName,
       users.last_name AS lastName, users.phone, users.role, users.status, users.resident_type AS residentType,
       users.notify_announcements AS notifyAnnouncements, users.notify_events AS notifyEvents,
+      users.property_id AS propertyId,
       properties.street_number || ' ' || properties.street_name || ' ' || properties.street_suffix AS address
     FROM sessions
     INNER JOIN users ON users.id = sessions.user_id
@@ -405,7 +406,7 @@ function validDateRange(startsAtValue, endsAtValue, requireFuture = false) {
 
 async function portalDashboard(request, env) {
   const user = await requireUser(request, env)
-  const [announcements, events, documents, reservations] = await env.DB.batch([
+  const [announcements, events, documents, reservations, messages] = await env.DB.batch([
     env.DB.prepare(`SELECT id, title, body, audience, published_at AS publishedAt FROM announcements
       WHERE published_at <= CURRENT_TIMESTAMP ORDER BY published_at DESC LIMIT 20`),
     env.DB.prepare(`SELECT id, title, description, starts_at AS startsAt, ends_at AS endsAt,
@@ -416,12 +417,15 @@ async function portalDashboard(request, env) {
       attendee_count AS attendeeCount, cleaning_method AS cleaningMethod, notes, status,
       decision_reason AS decisionReason, reviewed_at AS reviewedAt, deposit_status AS depositStatus
       FROM clubhouse_reservations WHERE user_id = ?1 ORDER BY starts_at DESC`).bind(user.id),
+    env.DB.prepare(`SELECT id, category, message, status, created_at AS createdAt
+      FROM contact_messages WHERE user_id = ?1 ORDER BY created_at DESC LIMIT 100`).bind(user.id),
   ])
   return json({
     announcements: announcements.results,
     events: events.results,
     documents: documents.results,
     reservations: reservations.results,
+    messages: messages.results,
   })
 }
 
@@ -460,8 +464,13 @@ async function adminDashboard(request, env) {
       FROM clubhouse_reservations INNER JOIN users ON users.id = clubhouse_reservations.user_id
       INNER JOIN properties ON properties.id = users.property_id
       ORDER BY clubhouse_reservations.starts_at DESC LIMIT 100`),
-    env.DB.prepare(`SELECT id, name, email, phone, category, message, status, admin_notes AS adminNotes,
-      created_at AS createdAt FROM contact_messages ORDER BY created_at DESC LIMIT 200`),
+    env.DB.prepare(`SELECT contact_messages.id, contact_messages.name, contact_messages.email, contact_messages.phone,
+      contact_messages.category, contact_messages.message, contact_messages.status,
+      contact_messages.admin_notes AS adminNotes, contact_messages.created_at AS createdAt,
+      CASE WHEN contact_messages.user_id IS NULL THEN 'Public website' ELSE 'Resident portal' END AS source,
+      properties.street_number || ' ' || properties.street_name || ' ' || properties.street_suffix AS address
+      FROM contact_messages LEFT JOIN properties ON properties.id = contact_messages.property_id
+      ORDER BY contact_messages.created_at DESC LIMIT 200`),
     env.DB.prepare(`SELECT id, original_name AS originalName, mime_type AS mimeType, file_size AS fileSize,
       width, height, alt_text AS altText, caption, sort_order AS sortOrder, status, created_at AS createdAt
       FROM gallery_photos ORDER BY sort_order, created_at`),
@@ -614,6 +623,36 @@ async function createContactMessage(request, env) {
       'website-contact', { name, email })
   } catch (error) {
     console.error(JSON.stringify({ message: 'Contact notification failed', contactId: id, detail: String(error) }))
+  }
+  return json({ id, status: 'received' }, { status: 201 })
+}
+
+async function createResidentMessage(request, env) {
+  const user = await requireUser(request, env)
+  const body = await readJson(request)
+  const category = ['general', 'maintenance', 'architectural', 'board'].includes(body.category) ? body.category : 'general'
+  const message = cleanText(body.message, 5000, true)
+  const recent = await env.DB.prepare(`SELECT id FROM contact_messages WHERE user_id = ?1
+    AND created_at >= datetime('now', '-1 minute') LIMIT 1`).bind(user.id).first()
+  if (recent) throw new ResponseError('Please wait before sending another message.', 429)
+  const id = crypto.randomUUID()
+  const name = `${user.firstName} ${user.lastName}`
+  await env.DB.batch([
+    env.DB.prepare(`INSERT INTO contact_messages (id, name, email, phone, category, message, user_id, property_id)
+      VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)`).bind(id, name, user.email, user.phone, category, message,
+      user.id, user.propertyId),
+    env.DB.prepare(`INSERT INTO communication_log (id, property_id, user_id, direction, channel, recipient_or_sender,
+      subject, summary, delivery_status, related_type, related_id) VALUES (?1, ?2, ?3, 'inbound', 'website',
+      ?4, ?5, ?6, 'recorded', 'contact', ?7)`).bind(crypto.randomUUID(), user.propertyId, user.id, user.email,
+      `Resident portal message: ${category}`, message.slice(0, 500), id),
+  ])
+  try {
+    await sendTransactionalEmail(env, [{ email: 'board@pennylanehoa.net', name: 'Penny Lane HOA Board' }],
+      `Resident message: ${category} - ${name}`,
+      `<p>A resident sent a message through the portal.</p><p><strong>From:</strong> ${escapeHtml(name)} (${escapeHtml(user.email)})${user.phone ? `<br><strong>Phone:</strong> ${escapeHtml(user.phone)}` : ''}<br><strong>Property:</strong> ${escapeHtml(user.address)}<br><strong>Category:</strong> ${escapeHtml(category)}</p><p>${escapeHtml(message).replace(/\n/g, '<br>')}</p><p>The message is also stored in the administration dashboard.</p>`,
+      'resident-message', { name, email: user.email })
+  } catch (error) {
+    console.error(JSON.stringify({ message: 'Resident message notification failed', contactId: id, detail: String(error) }))
   }
   return json({ id, status: 'received' }, { status: 201 })
 }
@@ -1252,6 +1291,7 @@ async function handleApi(request, env) {
   if (request.method === 'POST' && url.pathname === '/api/auth/code/verify') return verifyLoginCode(request, env)
   if (request.method === 'POST' && url.pathname === '/api/auth/logout') return logout(request, env)
   if (request.method === 'GET' && url.pathname === '/api/portal/dashboard') return portalDashboard(request, env)
+  if (request.method === 'POST' && url.pathname === '/api/portal/messages') return createResidentMessage(request, env)
   if (request.method === 'PATCH' && url.pathname === '/api/portal/preferences') return updateNotificationPreferences(request, env)
   if (request.method === 'POST' && url.pathname === '/api/portal/reservations') return createReservation(request, env)
   const reservationMatch = url.pathname.match(/^\/api\/portal\/reservations\/([^/]+)$/)
