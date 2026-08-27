@@ -342,10 +342,10 @@ async function adminDashboard(request, env) {
       properties.status, hoa_phases.name AS phase FROM properties INNER JOIN hoa_phases ON hoa_phases.id = properties.phase_id
       ORDER BY properties.street_name, properties.street_number`),
     env.DB.prepare('SELECT id, name, status FROM hoa_phases ORDER BY id'),
-    env.DB.prepare('SELECT id, title, audience, published_at AS publishedAt FROM announcements ORDER BY published_at DESC'),
-    env.DB.prepare(`SELECT id, title, starts_at AS startsAt, ends_at AS endsAt, audience, event_type AS eventType
+    env.DB.prepare('SELECT id, title, body, audience, published_at AS publishedAt FROM announcements ORDER BY published_at DESC'),
+    env.DB.prepare(`SELECT id, title, description, starts_at AS startsAt, ends_at AS endsAt, audience, event_type AS eventType, status
       FROM events ORDER BY starts_at DESC LIMIT 100`),
-    env.DB.prepare('SELECT id, title, category, audience, document_url AS url FROM documents ORDER BY category, title'),
+    env.DB.prepare('SELECT id, title, description, category, audience, document_url AS url FROM documents ORDER BY category, title'),
     env.DB.prepare(`SELECT clubhouse_reservations.id, clubhouse_reservations.event_name AS eventName,
       clubhouse_reservations.starts_at AS startsAt, clubhouse_reservations.ends_at AS endsAt,
       clubhouse_reservations.attendee_count AS attendeeCount, clubhouse_reservations.status,
@@ -416,6 +416,83 @@ async function createDocument(request, env) {
     VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)`).bind(id, cleanText(body.title, 140, true), cleanText(body.description, 1000),
     url, cleanText(body.category || 'General', 80, true), audience, admin.id).run()
   return json({ id }, { status: 201 })
+}
+
+async function updateProperty(request, env, propertyId) {
+  const admin = await requireAdmin(request, env)
+  const body = await readJson(request)
+  const status = ['active', 'planned', 'inactive'].includes(body.status) ? body.status : null
+  if (!status) throw new ResponseError('Select a valid property status.', 400)
+  const result = await env.DB.prepare('UPDATE properties SET status = ?1, updated_at = CURRENT_TIMESTAMP WHERE id = ?2')
+    .bind(status, propertyId).run()
+  if (!result.meta.changes) throw new ResponseError('Property not found.', 404)
+  await env.DB.prepare(`INSERT INTO audit_log (actor_user_id, action, target_type, target_id, details_json)
+    VALUES (?1, 'property.status_changed', 'property', ?2, ?3)`).bind(admin.id, propertyId, JSON.stringify({ status })).run()
+  return json({ status })
+}
+
+async function updateAnnouncement(request, env, id) {
+  await requireAdmin(request, env)
+  const body = await readJson(request)
+  const audience = ['public', 'members'].includes(body.audience) ? body.audience : 'members'
+  const result = await env.DB.prepare(`UPDATE announcements SET title = ?1, body = ?2, audience = ?3,
+    updated_at = CURRENT_TIMESTAMP WHERE id = ?4`).bind(cleanText(body.title, 140, true),
+    cleanText(body.body, 5000, true), audience, id).run()
+  if (!result.meta.changes) throw new ResponseError('Announcement not found.', 404)
+  return json({ status: 'updated' })
+}
+
+async function deleteAnnouncement(request, env, id) {
+  await requireAdmin(request, env)
+  const result = await env.DB.prepare('DELETE FROM announcements WHERE id = ?1').bind(id).run()
+  if (!result.meta.changes) throw new ResponseError('Announcement not found.', 404)
+  return json({ status: 'deleted' })
+}
+
+async function updateEvent(request, env, id) {
+  await requireAdmin(request, env)
+  const existing = await env.DB.prepare('SELECT event_type AS eventType FROM events WHERE id = ?1').bind(id).first()
+  if (!existing) throw new ResponseError('Event not found.', 404)
+  if (existing.eventType === 'clubhouse') throw new ResponseError('Manage clubhouse events from Reservations.', 409)
+  const body = await readJson(request)
+  const range = validDateRange(body.startsAt, body.endsAt)
+  const audience = ['public', 'members'].includes(body.audience) ? body.audience : 'members'
+  const eventType = ['community', 'meeting'].includes(body.eventType) ? body.eventType : 'community'
+  await env.DB.prepare(`UPDATE events SET title = ?1, description = ?2, starts_at = ?3, ends_at = ?4,
+    audience = ?5, event_type = ?6, status = 'scheduled', updated_at = CURRENT_TIMESTAMP WHERE id = ?7`)
+    .bind(cleanText(body.title, 140, true), cleanText(body.description, 3000), range.startsAt,
+      range.endsAt, audience, eventType, id).run()
+  return json({ status: 'updated' })
+}
+
+async function cancelEvent(request, env, id) {
+  await requireAdmin(request, env)
+  const event = await env.DB.prepare('SELECT event_type AS eventType FROM events WHERE id = ?1').bind(id).first()
+  if (!event) throw new ResponseError('Event not found.', 404)
+  if (event.eventType === 'clubhouse') throw new ResponseError('Cancel clubhouse events from Reservations.', 409)
+  await env.DB.prepare("UPDATE events SET status = 'cancelled', updated_at = CURRENT_TIMESTAMP WHERE id = ?1").bind(id).run()
+  return json({ status: 'cancelled' })
+}
+
+async function updateDocument(request, env, id) {
+  await requireAdmin(request, env)
+  const body = await readJson(request)
+  const audience = ['public', 'members'].includes(body.audience) ? body.audience : 'members'
+  const url = cleanText(body.url, 1000, true)
+  if (!/^https:\/\//i.test(url)) throw new ResponseError('Document links must use HTTPS.', 400)
+  const result = await env.DB.prepare(`UPDATE documents SET title = ?1, description = ?2, document_url = ?3,
+    category = ?4, audience = ?5, updated_at = CURRENT_TIMESTAMP WHERE id = ?6`)
+    .bind(cleanText(body.title, 140, true), cleanText(body.description, 1000), url,
+      cleanText(body.category || 'General', 80, true), audience, id).run()
+  if (!result.meta.changes) throw new ResponseError('Document not found.', 404)
+  return json({ status: 'updated' })
+}
+
+async function deleteDocument(request, env, id) {
+  await requireAdmin(request, env)
+  const result = await env.DB.prepare('DELETE FROM documents WHERE id = ?1').bind(id).run()
+  if (!result.meta.changes) throw new ResponseError('Document not found.', 404)
+  return json({ status: 'deleted' })
 }
 
 async function createReservation(request, env) {
@@ -624,6 +701,19 @@ async function handleApi(request, env) {
   if (request.method === 'POST' && url.pathname === '/api/admin/announcements') return createAnnouncement(request, env)
   if (request.method === 'POST' && url.pathname === '/api/admin/events') return createEvent(request, env)
   if (request.method === 'POST' && url.pathname === '/api/admin/documents') return createDocument(request, env)
+  const propertyMatch = url.pathname.match(/^\/api\/admin\/properties\/([^/]+)$/)
+  if (propertyMatch && request.method === 'PATCH') return updateProperty(request, env, propertyMatch[1])
+  const announcementMatch = url.pathname.match(/^\/api\/admin\/announcements\/([^/]+)$/)
+  if (announcementMatch && request.method === 'PATCH') return updateAnnouncement(request, env, announcementMatch[1])
+  if (announcementMatch && request.method === 'DELETE') return deleteAnnouncement(request, env, announcementMatch[1])
+  const eventMatch = url.pathname.match(/^\/api\/admin\/events\/([^/]+)$/)
+  if (eventMatch && request.method === 'PATCH') return updateEvent(request, env, eventMatch[1])
+  if (eventMatch && request.method === 'DELETE') return cancelEvent(request, env, eventMatch[1])
+  const documentMatch = url.pathname.match(/^\/api\/admin\/documents\/([^/]+)$/)
+  if (documentMatch && request.method === 'PATCH') return updateDocument(request, env, documentMatch[1])
+  if (documentMatch && request.method === 'DELETE') return deleteDocument(request, env, documentMatch[1])
+  const adminReservationMatch = url.pathname.match(/^\/api\/admin\/reservations\/([^/]+)$/)
+  if (adminReservationMatch && request.method === 'DELETE') return cancelReservation(request, env, adminReservationMatch[1])
   const statusMatch = url.pathname.match(/^\/api\/admin\/users\/([^/]+)\/status$/)
   if (request.method === 'PATCH' && statusMatch) return updateUserStatus(request, env, statusMatch[1])
   return json({ error: 'Not found' }, { status: 404 })
