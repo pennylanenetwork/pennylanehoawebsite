@@ -189,6 +189,17 @@ export default function Admin() {
     } catch (requestError) { setError(requestError.message) }
   }
 
+  async function replyToMessage(id, reply) {
+    setError('')
+    setNotice('')
+    try {
+      await api(`/api/admin/messages/${id}/reply`, { method: 'POST', body: JSON.stringify({ reply }) })
+      setNotice('Reply emailed and added to the property communication history.')
+      await load()
+      return true
+    } catch (requestError) { setError(requestError.message); return false }
+  }
+
   async function uploadPhoto(form, sourceFile) {
     setError('')
     setNotice('')
@@ -270,7 +281,7 @@ export default function Admin() {
       {tab === 'photos' && <PhotoManager photos={data.photos} onUpload={uploadPhoto} onUpdate={updatePhoto} onDelete={(id) => remove('gallery', id, 'Delete this photo permanently?')} />}
 
       {tab === 'reservations' && <div className="reservation-admin-list">{data.reservations.map((item) => <ReservationReview key={item.id} item={item} onDecide={decideReservation} onCancel={() => remove('reservations', item.id, 'Cancel this clubhouse reservation?')} />)}{data.reservations.length === 0 && <p className="empty-state">No clubhouse reservation requests yet.</p>}</div>}
-      {tab === 'messages' && <div className="message-admin-list">{data.messages.map((item) => <MessageReview key={item.id} item={item} onUpdate={updateMessage} />)}{data.messages.length === 0 && <p className="empty-state">No contact messages yet.</p>}</div>}
+      {tab === 'messages' && <div className="message-admin-list">{data.messages.map((item) => <MessageReview key={item.id} item={item} onUpdate={updateMessage} onReply={replyToMessage} />)}{data.messages.length === 0 && <p className="empty-state">No contact messages yet.</p>}</div>}
     </main>
   </div>
 }
@@ -300,9 +311,11 @@ function ReservationReview({ item, onDecide, onCancel }) {
   return <article className={`reservation-review ${item.status === 'pending' ? 'is-pending' : ''}`}><header><div><strong>{item.eventName}</strong><small>{item.residentName} | {item.address}</small></div><span className={`status status-${item.status}`}>{item.status}</span></header><dl><div><dt>Schedule</dt><dd>{dateTime(item.startsAt)} to {dateTime(item.endsAt)}</dd></div><div><dt>Event</dt><dd>{item.eventType}</dd></div><div><dt>Attendance</dt><dd>{item.attendeeCount}</dd></div><div><dt>Cleaning</dt><dd>{item.cleaningMethod === 'professional' ? 'Professional cleaner' : 'Resident will clean'}</dd></div></dl>{item.notes && <p><strong>Notes:</strong> {item.notes}</p>}{item.decisionReason && <p className="decision-reason"><strong>Decision reason:</strong> {item.decisionReason}</p>}{item.status === 'pending' && <div className="decision-controls"><button type="button" className="primary-button" onClick={() => onDecide(item.id, 'approve')}>Approve</button><label>Reason required to deny<textarea maxLength="1000" value={reason} onChange={(event) => setReason(event.target.value)} /></label><button type="button" className="row-delete" disabled={!reason.trim()} onClick={() => onDecide(item.id, 'deny', reason)}>Deny request</button></div>}{item.status === 'approved' && <button type="button" className="row-delete" onClick={onCancel}>Cancel reservation</button>}</article>
 }
 
-function MessageReview({ item, onUpdate }) {
+function MessageReview({ item, onUpdate, onReply }) {
   const [notes, setNotes] = useState(item.adminNotes || '')
-  return <article className={`message-review status-border-${item.status}`}><header><div><strong>{item.name}</strong><small><a href={`mailto:${item.email}`}>{item.email}</a>{item.phone ? ` | ${item.phone}` : ''}{item.address ? ` | ${item.address}` : ''}</small></div><span className={`status status-${item.status}`}>{item.status}</span></header><p className="message-category">{item.source} | {item.category} | {dateTime(item.createdAt)}</p><p className="message-body">{item.message}</p><label>Internal notes<textarea maxLength="3000" value={notes} onChange={(event) => setNotes(event.target.value)} /></label><div className="row-actions"><button type="button" onClick={() => onUpdate(item.id, 'read', notes)}>Mark read</button><button type="button" onClick={() => onUpdate(item.id, 'closed', notes)}>Close</button>{item.status === 'closed' && <button type="button" onClick={() => onUpdate(item.id, 'read', notes)}>Reopen</button>}</div></article>
+  const [reply, setReply] = useState('')
+  const [sending, setSending] = useState(false)
+  return <article className={`message-review status-border-${item.status}`}><header><div><strong>{item.name}</strong><small><a href={`mailto:${item.email}`}>{item.email}</a>{item.phone ? ` | ${item.phone}` : ''}{item.address ? ` | ${item.address}` : ''}</small></div><span className={`status status-${item.status}`}>{item.status}</span></header><p className="message-category">{item.source} | {item.category} | {dateTime(item.createdAt)}</p><p className="message-body">{item.message}</p><label>Reply to resident<textarea maxLength="5000" value={reply} onChange={(event) => setReply(event.target.value)} /></label><button type="button" className="primary-button message-reply-button" disabled={sending || !reply.trim()} onClick={async () => { setSending(true); if (await onReply(item.id, reply)) setReply(''); setSending(false) }}>{sending ? 'Sending...' : 'Email reply'}</button><label>Internal notes<textarea maxLength="3000" value={notes} onChange={(event) => setNotes(event.target.value)} /></label><div className="row-actions"><button type="button" onClick={() => onUpdate(item.id, 'read', notes)}>Mark read</button><button type="button" onClick={() => onUpdate(item.id, 'closed', notes)}>Close</button>{item.status === 'closed' && <button type="button" onClick={() => onUpdate(item.id, 'read', notes)}>Reopen</button>}</div></article>
 }
 
 function residentTypeLabel(value) {

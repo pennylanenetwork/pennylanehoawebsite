@@ -157,7 +157,7 @@ async function sendLoginCode(env, user, code, requestId) {
   }
 }
 
-async function sendTransactionalEmail(env, recipients, subject, htmlContent, tag, replyTo = null) {
+async function sendTransactionalEmail(env, recipients, subject, htmlContent, tag, replyTo = null, recordCommunication = true) {
   if (!env.BREVO_API_KEY || recipients.length === 0) return
   const response = await fetch('https://api.brevo.com/v3/smtp/email', {
     method: 'POST',
@@ -176,7 +176,7 @@ async function sendTransactionalEmail(env, recipients, subject, htmlContent, tag
     console.error(JSON.stringify({ message: 'Brevo rejected transactional email', status: response.status, detail: detail.slice(0, 500), tag }))
     throw new Error('Transactional email could not be sent')
   }
-  await logOutboundCommunications(env, recipients, subject, htmlContent, tag, 'sent')
+  if (recordCommunication) await logOutboundCommunications(env, recipients, subject, htmlContent, tag, 'sent')
 }
 
 function emailSummary(htmlContent) {
@@ -225,14 +225,18 @@ async function activeResidentRecipients(env, preferenceColumn) {
   return result.results.map((resident) => ({ email: resident.email, name: `${resident.firstName} ${resident.lastName}`.trim() }))
 }
 
+async function activeAdminRecipients(env) {
+  const result = await env.DB.prepare(`SELECT email, first_name AS firstName, last_name AS lastName FROM users
+    WHERE status = 'active' AND role IN ('admin', 'super_admin') ORDER BY id`).all()
+  return result.results.map((admin) => ({ email: admin.email, name: `${admin.firstName} ${admin.lastName}`.trim() }))
+}
+
 async function notifyReservationAdmins(env, user, reservation) {
-  const admins = await env.DB.prepare(`SELECT email, first_name AS firstName, last_name AS lastName FROM users
-    WHERE status = 'active' AND role IN ('admin', 'super_admin')`).all()
-  const recipients = admins.results.map((admin) => ({ email: admin.email, name: `${admin.firstName} ${admin.lastName}`.trim() }))
+  const recipients = await activeAdminRecipients(env)
   const residentName = `${user.firstName} ${user.lastName}`.trim()
   await sendTransactionalEmail(env, recipients, `Clubhouse request from ${residentName}`,
     `<p>A new clubhouse reservation request is awaiting review.</p><p><strong>${escapeHtml(reservation.eventName)}</strong><br>${escapeHtml(reservation.startsAt)} through ${escapeHtml(reservation.endsAt)}<br>${reservation.attendeeCount} expected attendees</p><p>Submitted by ${escapeHtml(residentName)}. Sign in to the HOA administration dashboard to approve or deny it.</p>`,
-    'reservation-request')
+    'reservation-request', null, false)
 }
 
 async function notifyReservationDecision(env, reservation, approved) {
@@ -691,6 +695,13 @@ async function createGuestRegistration(request, env) {
       VALUES (?1, 'guest.registered', 'property', ?2, ?3)`).bind(user.id, String(user.propertyId),
       JSON.stringify({ guestRegistrationId: id, guestName, startsOn, endsOn, poolResponsibilityAcknowledged: true })),
   ])
+  try {
+    await sendTransactionalEmail(env, await activeAdminRecipients(env), `Guest registered: ${guestName}`,
+      `<p>A resident registered a guest.</p><p><strong>Guest:</strong> ${escapeHtml(guestName)}<br><strong>Stay:</strong> ${escapeHtml(startsOn)} through ${escapeHtml(endsOn)}<br><strong>Property:</strong> ${escapeHtml(user.address)}<br><strong>Registered by:</strong> ${escapeHtml(`${user.firstName} ${user.lastName}`)}</p><p>The resident accepted responsibility for the guest's unsupervised pool access during the registered stay.</p>`,
+      'guest-registered', null, false)
+  } catch (error) {
+    console.error(JSON.stringify({ message: 'Guest registration notification failed', guestRegistrationId: id, detail: String(error) }))
+  }
   return json({ id, status: 'active' }, { status: 201 })
 }
 
@@ -706,6 +717,13 @@ async function revokeGuestRegistration(request, env, id) {
       VALUES (?1, 'guest.revoked', 'property', ?2, ?3)`).bind(user.id, String(guest.propertyId),
       JSON.stringify({ guestRegistrationId: id, guestName: guest.guestName })),
   ])
+  try {
+    await sendTransactionalEmail(env, await activeAdminRecipients(env), `Guest registration revoked: ${guest.guestName}`,
+      `<p>A resident revoked a guest registration.</p><p><strong>Guest:</strong> ${escapeHtml(guest.guestName)}<br><strong>Property:</strong> ${escapeHtml(user.address)}<br><strong>Revoked by:</strong> ${escapeHtml(`${user.firstName} ${user.lastName}`)}</p>`,
+      'guest-revoked', null, false)
+  } catch (error) {
+    console.error(JSON.stringify({ message: 'Guest revocation notification failed', guestRegistrationId: id, detail: String(error) }))
+  }
   return json({ status: 'revoked' })
 }
 
@@ -719,6 +737,31 @@ async function updateContactMessage(request, env, id) {
     updated_at = CURRENT_TIMESTAMP WHERE id = ?3`).bind(status, notes, id).run()
   if (!result.meta.changes) throw new ResponseError('Message not found.', 404)
   return json({ status })
+}
+
+async function replyToContactMessage(request, env, id) {
+  const admin = await requireAdmin(request, env)
+  const body = await readJson(request)
+  const reply = cleanText(body.reply, 5000, true)
+  const message = await env.DB.prepare(`SELECT id, name, email, category, message, user_id AS userId,
+    property_id AS propertyId FROM contact_messages WHERE id = ?1`).bind(id).first()
+  if (!message) throw new ResponseError('Message not found.', 404)
+  await sendTransactionalEmail(env, [{ email: message.email, name: message.name }],
+    `Re: Your Penny Lane HOA ${message.category} message`,
+    `<p>Hello ${escapeHtml(message.name)},</p><p>${escapeHtml(reply).replace(/\n/g, '<br>')}</p><hr><p><strong>Your original message:</strong></p><p>${escapeHtml(message.message).replace(/\n/g, '<br>')}</p>`,
+    'message-reply', null, false)
+  await env.DB.batch([
+    env.DB.prepare(`UPDATE contact_messages SET status = 'read', updated_at = CURRENT_TIMESTAMP WHERE id = ?1`).bind(id),
+    env.DB.prepare(`INSERT INTO communication_log (id, property_id, user_id, direction, channel,
+      recipient_or_sender, subject, summary, delivery_status, related_type, related_id)
+      VALUES (?1, ?2, ?3, 'outbound', 'email', ?4, ?5, ?6, 'sent', 'contact_reply', ?7)`)
+      .bind(crypto.randomUUID(), message.propertyId, message.userId, message.email,
+        `Re: Your Penny Lane HOA ${message.category} message`, reply.slice(0, 500), id),
+    env.DB.prepare(`INSERT INTO audit_log (actor_user_id, action, target_type, target_id, details_json)
+      VALUES (?1, 'message.replied', 'contact_message', ?2, ?3)`).bind(admin.id, id,
+      JSON.stringify({ email: message.email, propertyId: message.propertyId, reply: reply.slice(0, 500) })),
+  ])
+  return json({ status: 'sent' })
 }
 
 async function createProperty(request, env) {
@@ -985,7 +1028,11 @@ async function updatePoolCard(request, env, id) {
   const body = await readJson(request)
   const status = ['active', 'lost', 'stolen', 'returned', 'deactivated'].includes(body.status) ? body.status : null
   if (!status) throw new ResponseError('Select a valid pool card status.', 400)
-  const existing = await env.DB.prepare('SELECT property_id AS propertyId, card_number AS cardNumber FROM pool_access_cards WHERE id = ?1').bind(id).first()
+  const existing = await env.DB.prepare(`SELECT pool_access_cards.property_id AS propertyId,
+    pool_access_cards.card_number AS cardNumber, pool_access_cards.status,
+    properties.street_number || ' ' || properties.street_name || ' ' || properties.street_suffix AS address
+    FROM pool_access_cards INNER JOIN properties ON properties.id = pool_access_cards.property_id
+    WHERE pool_access_cards.id = ?1`).bind(id).first()
   if (!existing) throw new ResponseError('Pool card not found.', 404)
   const assignedUserId = cleanText(body.assignedUserId, 100)
   if (assignedUserId) {
@@ -1000,6 +1047,15 @@ async function updatePoolCard(request, env, id) {
       VALUES (?1, 'pool_card.updated', 'property', ?2, ?3)`).bind(admin.id, String(existing.propertyId),
       JSON.stringify({ poolCardId: id, cardNumber: existing.cardNumber, status, assignedUserId })),
   ])
+  if (['lost', 'stolen'].includes(status) && status !== existing.status) {
+    try {
+      await sendTransactionalEmail(env, await activeAdminRecipients(env), `Pool card reported ${status}: ${existing.cardNumber}`,
+        `<p>A pool access card was marked <strong>${status}</strong>.</p><p><strong>Card ID:</strong> ${escapeHtml(existing.cardNumber)}<br><strong>Property:</strong> ${escapeHtml(existing.address)}<br><strong>Updated by:</strong> ${escapeHtml(`${admin.firstName} ${admin.lastName}`)}</p>${notes ? `<p><strong>Notes:</strong> ${escapeHtml(notes)}</p>` : ''}`,
+        `pool-card-${status}`, null, false)
+    } catch (error) {
+      console.error(JSON.stringify({ message: 'Pool card status notification failed', poolCardId: id, detail: String(error) }))
+    }
+  }
   return json({ status })
 }
 
@@ -1453,6 +1509,8 @@ async function handleApi(request, env) {
   if (adminReservationMatch && request.method === 'DELETE') return cancelReservation(request, env, adminReservationMatch[1])
   const contactMessageMatch = url.pathname.match(/^\/api\/admin\/messages\/([^/]+)$/)
   if (contactMessageMatch && request.method === 'PATCH') return updateContactMessage(request, env, contactMessageMatch[1])
+  const contactMessageReplyMatch = url.pathname.match(/^\/api\/admin\/messages\/([^/]+)\/reply$/)
+  if (contactMessageReplyMatch && request.method === 'POST') return replyToContactMessage(request, env, contactMessageReplyMatch[1])
   const galleryMatch = url.pathname.match(/^\/api\/admin\/gallery\/([^/]+)$/)
   if (galleryMatch && request.method === 'PATCH') return updateGalleryPhoto(request, env, galleryMatch[1])
   if (galleryMatch && request.method === 'DELETE') return deleteGalleryPhoto(request, env, galleryMatch[1])
