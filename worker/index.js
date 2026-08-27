@@ -176,6 +176,33 @@ async function sendTransactionalEmail(env, recipients, subject, htmlContent, tag
   }
 }
 
+async function sendResidentBroadcast(env, recipients, subject, htmlContent, tag) {
+  if (!env.BREVO_API_KEY || recipients.length === 0) return
+  const response = await fetch('https://api.brevo.com/v3/smtp/email', {
+    method: 'POST',
+    headers: { 'api-key': env.BREVO_API_KEY, 'content-type': 'application/json' },
+    body: JSON.stringify({
+      sender: { name: 'Penny Lane HOA', email: 'notifications@pennylanehoa.net' },
+      replyTo: { name: 'Penny Lane HOA Board', email: 'board@pennylanehoa.net' },
+      subject,
+      htmlContent,
+      messageVersions: recipients.map((recipient) => ({ to: [{ email: recipient.email, name: recipient.name }] })),
+      tags: [tag],
+    }),
+  })
+  if (!response.ok) {
+    const detail = await response.text()
+    console.error(JSON.stringify({ message: 'Brevo rejected resident broadcast', status: response.status, detail: detail.slice(0, 500), tag }))
+    throw new Error('Resident notification could not be sent')
+  }
+}
+
+async function activeResidentRecipients(env, preferenceColumn) {
+  const result = await env.DB.prepare(`SELECT email, first_name AS firstName, last_name AS lastName FROM users
+    WHERE status = 'active' AND ${preferenceColumn} = 1 ORDER BY id`).all()
+  return result.results.map((resident) => ({ email: resident.email, name: `${resident.firstName} ${resident.lastName}`.trim() }))
+}
+
 async function notifyReservationAdmins(env, user, reservation) {
   const admins = await env.DB.prepare(`SELECT email, first_name AS firstName, last_name AS lastName FROM users
     WHERE status = 'active' AND role IN ('admin', 'super_admin')`).all()
@@ -313,7 +340,8 @@ async function currentUser(request, env) {
   const tokenHash = await sha256(token)
   const user = await env.DB.prepare(`
     SELECT users.id, users.email, users.first_name AS firstName,
-      users.last_name AS lastName, users.role, users.status,
+      users.last_name AS lastName, users.phone, users.role, users.status, users.resident_type AS residentType,
+      users.notify_announcements AS notifyAnnouncements, users.notify_events AS notifyEvents,
       properties.street_number || ' ' || properties.street_name || ' ' || properties.street_suffix AS address
     FROM sessions
     INNER JOIN users ON users.id = sessions.user_id
@@ -512,8 +540,16 @@ async function createAnnouncement(request, env) {
   const body = await readJson(request)
   const audience = ['public', 'members'].includes(body.audience) ? body.audience : 'members'
   const id = crypto.randomUUID()
+  const title = cleanText(body.title, 140, true)
+  const announcementBody = cleanText(body.body, 5000, true)
   await env.DB.prepare(`INSERT INTO announcements (id, title, body, audience, created_by) VALUES (?1, ?2, ?3, ?4, ?5)`)
-    .bind(id, cleanText(body.title, 140, true), cleanText(body.body, 5000, true), audience, admin.id).run()
+    .bind(id, title, announcementBody, audience, admin.id).run()
+  if (body.notifyResidents === true) {
+    try {
+      await sendResidentBroadcast(env, await activeResidentRecipients(env, 'notify_announcements'), `HOA announcement: ${title}`,
+        `<p>A new Penny Lane HOA announcement has been posted.</p><h2>${escapeHtml(title)}</h2><p>${escapeHtml(announcementBody).replace(/\n/g, '<br>')}</p><p>Sign in to the resident portal for community information and documents.</p>`, 'hoa-announcement')
+    } catch (error) { console.error(JSON.stringify({ message: 'Announcement broadcast failed', announcementId: id, detail: String(error) })) }
+  }
   return json({ id }, { status: 201 })
 }
 
@@ -524,9 +560,17 @@ async function createEvent(request, env) {
   const audience = ['public', 'members'].includes(body.audience) ? body.audience : 'members'
   const eventType = ['community', 'meeting'].includes(body.eventType) ? body.eventType : 'community'
   const id = crypto.randomUUID()
+  const title = cleanText(body.title, 140, true)
+  const description = cleanText(body.description, 3000)
   await env.DB.prepare(`INSERT INTO events (id, title, description, starts_at, ends_at, audience, event_type, created_by)
-    VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)`).bind(id, cleanText(body.title, 140, true), cleanText(body.description, 3000),
+    VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)`).bind(id, title, description,
     range.startsAt, range.endsAt, audience, eventType, admin.id).run()
+  if (body.notifyResidents === true) {
+    try {
+      await sendResidentBroadcast(env, await activeResidentRecipients(env, 'notify_events'), `HOA event: ${title}`,
+        `<p>A new Penny Lane HOA event has been posted.</p><h2>${escapeHtml(title)}</h2><p>${escapeHtml(range.startsAt)} through ${escapeHtml(range.endsAt)}</p>${description ? `<p>${escapeHtml(description).replace(/\n/g, '<br>')}</p>` : ''}<p>Sign in to the resident portal to view the calendar.</p>`, 'hoa-event')
+    } catch (error) { console.error(JSON.stringify({ message: 'Event broadcast failed', eventId: id, detail: String(error) })) }
+  }
   return json({ id }, { status: 201 })
 }
 
@@ -833,6 +877,13 @@ async function register(request, env) {
       VALUES ('account.registered', 'user', ?1, ?2)
     `).bind(id, JSON.stringify({ propertyId: property.id })),
   ])
+  try {
+    const admins = await env.DB.prepare(`SELECT email, first_name AS firstName, last_name AS lastName FROM users
+      WHERE status = 'active' AND role IN ('admin', 'super_admin')`).all()
+    await sendTransactionalEmail(env, admins.results.map((item) => ({ email: item.email, name: `${item.firstName} ${item.lastName}`.trim() })),
+      `Resident access request from ${firstName} ${lastName}`,
+      `<p>A new resident access request is awaiting review.</p><p><strong>${escapeHtml(firstName)} ${escapeHtml(lastName)}</strong><br>${escapeHtml(email)}<br>${escapeHtml(address)}, Lindale, TX 75771</p><p>Sign in to the administration dashboard to approve or reject the request.</p>`, 'resident-registration')
+  } catch (error) { console.error(JSON.stringify({ message: 'Registration notification failed', userId: id, detail: String(error) })) }
   return json({ status: 'pending' }, { status: 201 })
 }
 
@@ -910,8 +961,9 @@ async function logout(request, env) {
 async function listUsers(request, env) {
   await requireAdmin(request, env)
   const result = await env.DB.prepare(`
-    SELECT users.id, users.email, users.first_name AS firstName, users.last_name AS lastName,
-      users.role, users.status, users.created_at AS createdAt,
+    SELECT users.id, users.email, users.first_name AS firstName, users.last_name AS lastName, users.phone,
+      users.role, users.status, users.resident_type AS residentType, users.property_id AS propertyId,
+      users.notify_announcements AS notifyAnnouncements, users.notify_events AS notifyEvents, users.created_at AS createdAt,
       properties.street_number || ' ' || properties.street_name || ' ' || properties.street_suffix AS address
     FROM users INNER JOIN properties ON properties.id = users.property_id
     ORDER BY CASE users.status WHEN 'pending' THEN 0 ELSE 1 END, users.created_at DESC
@@ -925,7 +977,7 @@ async function updateUserStatus(request, env, targetId) {
   const status = String(body.status || '')
   if (!['pending', 'active', 'rejected', 'suspended'].includes(status)) throw new ResponseError('Invalid account status.', 400)
   if (targetId === admin.id) throw new ResponseError('You cannot change your own account status.', 400)
-  const target = await env.DB.prepare('SELECT id, role FROM users WHERE id = ?1').bind(targetId).first()
+  const target = await env.DB.prepare('SELECT id, email, first_name AS firstName, last_name AS lastName, role FROM users WHERE id = ?1').bind(targetId).first()
   if (!target) throw new ResponseError('Account not found.', 404)
   if (target.role === 'super_admin' && admin.role !== 'super_admin') throw new ResponseError('Super administrator access required.', 403)
 
@@ -941,7 +993,82 @@ async function updateUserStatus(request, env, targetId) {
       VALUES (?1, 'account.status_changed', 'user', ?2, ?3)
     `).bind(admin.id, targetId, JSON.stringify({ status })),
   ])
+  if (['active', 'rejected'].includes(status)) {
+    const approved = status === 'active'
+    try {
+      await sendTransactionalEmail(env, [{ email: target.email, name: `${target.firstName} ${target.lastName}`.trim() }],
+        approved ? 'Your Penny Lane HOA resident access was approved' : 'Your Penny Lane HOA resident access request was not approved',
+        approved
+          ? `<p>Hello ${escapeHtml(target.firstName)},</p><p>Your resident access request has been approved. You can now sign in with Google or request an email code.</p>`
+          : `<p>Hello ${escapeHtml(target.firstName)},</p><p>Your resident access request was not approved. Reply to this message if you believe this was in error.</p>`,
+        approved ? 'resident-approved' : 'resident-rejected')
+    } catch (error) { console.error(JSON.stringify({ message: 'Account decision notification failed', targetId, detail: String(error) })) }
+  }
   return json({ status })
+}
+
+async function updateUserProfile(request, env, targetId) {
+  const admin = await requireAdmin(request, env)
+  const body = await readJson(request)
+  const target = await env.DB.prepare('SELECT id, role FROM users WHERE id = ?1').bind(targetId).first()
+  if (!target) throw new ResponseError('Account not found.', 404)
+  if (target.role === 'super_admin' && admin.role !== 'super_admin') throw new ResponseError('Super administrator access required.', 403)
+  const email = cleanText(body.email, 254, true).toLowerCase()
+  if (!/^\S+@\S+\.\S+$/.test(email)) throw new ResponseError('Enter a valid email address.', 400)
+  const role = ['resident', 'admin', 'super_admin'].includes(body.role) ? body.role : 'resident'
+  if (role === 'super_admin' && admin.role !== 'super_admin') throw new ResponseError('Super administrator access required.', 403)
+  if (targetId === admin.id && role !== admin.role) throw new ResponseError('You cannot change your own role.', 400)
+  const residentType = ['owner', 'tenant', 'household_member'].includes(body.residentType) ? body.residentType : 'owner'
+  const propertyId = Number(body.propertyId)
+  if (!Number.isInteger(propertyId)) throw new ResponseError('Select a valid property.', 400)
+  const property = await env.DB.prepare('SELECT id FROM properties WHERE id = ?1').bind(propertyId).first()
+  if (!property) throw new ResponseError('Property not found.', 404)
+  try {
+    await env.DB.batch([
+      env.DB.prepare(`UPDATE users SET first_name = ?1, last_name = ?2, email = ?3, phone = ?4,
+        property_id = ?5, resident_type = ?6, role = ?7, updated_at = CURRENT_TIMESTAMP WHERE id = ?8`)
+        .bind(cleanText(body.firstName, 80, true), cleanText(body.lastName, 80, true), email,
+          cleanText(body.phone, 30), propertyId, residentType, role, targetId),
+      env.DB.prepare(`INSERT INTO audit_log (actor_user_id, action, target_type, target_id, details_json)
+        VALUES (?1, 'account.profile_changed', 'user', ?2, ?3)`).bind(admin.id, targetId,
+        JSON.stringify({ email, propertyId, residentType, role })),
+    ])
+  } catch (error) {
+    if (String(error).includes('UNIQUE')) throw new ResponseError('That email address is already registered.', 409)
+    throw error
+  }
+  return json({ status: 'updated' })
+}
+
+async function updateNotificationPreferences(request, env) {
+  const user = await requireUser(request, env)
+  const body = await readJson(request)
+  const announcements = body.notifyAnnouncements === true ? 1 : 0
+  const events = body.notifyEvents === true ? 1 : 0
+  await env.DB.prepare(`UPDATE users SET notify_announcements = ?1, notify_events = ?2,
+    updated_at = CURRENT_TIMESTAMP WHERE id = ?3`).bind(announcements, events, user.id).run()
+  return json({ notifyAnnouncements: announcements, notifyEvents: events })
+}
+
+function csvCell(value) {
+  return `"${String(value ?? '').replace(/"/g, '""')}"`
+}
+
+async function exportResidentsCsv(request, env) {
+  await requireAdmin(request, env)
+  const result = await env.DB.prepare(`SELECT users.first_name AS firstName, users.last_name AS lastName, users.email,
+    users.phone, users.resident_type AS residentType, users.role, users.status,
+    properties.street_number || ' ' || properties.street_name || ' ' || properties.street_suffix AS address
+    FROM users INNER JOIN properties ON properties.id = users.property_id ORDER BY properties.street_name,
+    properties.street_number, users.last_name, users.first_name`).all()
+  const rows = [['First name', 'Last name', 'Email', 'Phone', 'Resident type', 'Role', 'Status', 'Property'],
+    ...result.results.map((item) => [item.firstName, item.lastName, item.email, item.phone, item.residentType, item.role, item.status, item.address])]
+  return new Response(rows.map((row) => row.map(csvCell).join(',')).join('\r\n'), { headers: {
+    'cache-control': 'private, no-store',
+    'content-disposition': 'attachment; filename="penny-lane-residents.csv"',
+    'content-type': 'text/csv; charset=utf-8',
+    'x-content-type-options': 'nosniff',
+  } })
 }
 
 async function handleApi(request, env) {
@@ -967,10 +1094,12 @@ async function handleApi(request, env) {
   if (request.method === 'POST' && url.pathname === '/api/auth/code/verify') return verifyLoginCode(request, env)
   if (request.method === 'POST' && url.pathname === '/api/auth/logout') return logout(request, env)
   if (request.method === 'GET' && url.pathname === '/api/portal/dashboard') return portalDashboard(request, env)
+  if (request.method === 'PATCH' && url.pathname === '/api/portal/preferences') return updateNotificationPreferences(request, env)
   if (request.method === 'POST' && url.pathname === '/api/portal/reservations') return createReservation(request, env)
   const reservationMatch = url.pathname.match(/^\/api\/portal\/reservations\/([^/]+)$/)
   if (request.method === 'DELETE' && reservationMatch) return cancelReservation(request, env, reservationMatch[1])
   if (request.method === 'GET' && url.pathname === '/api/admin/users') return listUsers(request, env)
+  if (request.method === 'GET' && url.pathname === '/api/admin/users.csv') return exportResidentsCsv(request, env)
   if (request.method === 'GET' && url.pathname === '/api/admin/dashboard') return adminDashboard(request, env)
   if (request.method === 'POST' && url.pathname === '/api/admin/properties') return createProperty(request, env)
   if (request.method === 'POST' && url.pathname === '/api/admin/announcements') return createAnnouncement(request, env)
@@ -997,6 +1126,8 @@ async function handleApi(request, env) {
   if (contactMessageMatch && request.method === 'PATCH') return updateContactMessage(request, env, contactMessageMatch[1])
   const statusMatch = url.pathname.match(/^\/api\/admin\/users\/([^/]+)\/status$/)
   if (request.method === 'PATCH' && statusMatch) return updateUserStatus(request, env, statusMatch[1])
+  const userMatch = url.pathname.match(/^\/api\/admin\/users\/([^/]+)$/)
+  if (request.method === 'PATCH' && userMatch) return updateUserProfile(request, env, userMatch[1])
   return json({ error: 'Not found' }, { status: 404 })
 }
 

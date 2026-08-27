@@ -4,8 +4,8 @@ import './Portal.css'
 
 const emptyForms = {
   property: { address: '', phaseName: 'New Development' },
-  announcement: { title: '', body: '', audience: 'members' },
-  event: { title: '', description: '', startsAt: '', endsAt: '', audience: 'members', eventType: 'community' },
+  announcement: { title: '', body: '', audience: 'members', notifyResidents: true },
+  event: { title: '', description: '', startsAt: '', endsAt: '', audience: 'members', eventType: 'community', notifyResidents: true },
   document: { title: '', description: '', url: '', category: 'General', audience: 'members' },
 }
 
@@ -56,6 +56,17 @@ export default function Admin() {
       await api(`/api/admin/users/${id}/status`, { method: 'PATCH', body: JSON.stringify({ status }) })
       await load()
     } catch (requestError) { setError(requestError.message) }
+  }
+
+  async function updateAccountProfile(id, profile) {
+    setError('')
+    setNotice('')
+    try {
+      await api(`/api/admin/users/${id}`, { method: 'PATCH', body: JSON.stringify(profile) })
+      setNotice('Resident record updated.')
+      await load()
+      return true
+    } catch (requestError) { setError(requestError.message); return false }
   }
 
   async function submit(kind, endpoint, event) {
@@ -176,14 +187,7 @@ export default function Admin() {
       {notice && <p className="form-notice" role="status">{notice}</p>}
       {error && <p className="form-error" role="alert">{error}</p>}
 
-      {tab === 'accounts' && <div className="account-table">
-        <div className="account-row account-head"><span>Name</span><span>Property</span><span>Status</span><span>Action</span></div>
-        {accounts.map((account) => <div className="account-row" key={account.id}>
-          <span><strong>{account.firstName} {account.lastName}</strong><small>{account.email}</small></span><span>{account.address}</span>
-          <span className={`status status-${account.status}`}>{account.status}</span>
-          <span className="account-actions">{account.status !== 'active' && <button type="button" onClick={() => updateAccount(account.id, 'active')}>Approve</button>}{account.status === 'active' && account.id !== user?.id && <button type="button" onClick={() => updateAccount(account.id, 'suspended')}>Suspend</button>}{account.status === 'pending' && <button type="button" className="quiet-action" onClick={() => updateAccount(account.id, 'rejected')}>Reject</button>}</span>
-        </div>)}
-      </div>}
+      {tab === 'accounts' && <section><div className="account-tools"><p>{accounts.length} resident accounts</p><a className="quiet-button" href="/api/admin/users.csv">Download CSV</a></div><div className="resident-admin-list">{accounts.map((account) => <AccountReview key={account.id} account={account} currentUser={user} properties={data.properties} onStatus={updateAccount} onSave={updateAccountProfile} />)}</div></section>}
 
       {tab === 'properties' && <Workspace title="Add property" form={<form onSubmit={(event) => submit('property', 'properties', event)}>
         <label>Street address<input required placeholder="800 Abbey Rd" value={forms.property.address} onChange={(event) => updateForm('property', 'address', event.target.value)} /></label>
@@ -195,6 +199,7 @@ export default function Admin() {
         <label>Title<input required value={forms.announcement.title} onChange={(event) => updateForm('announcement', 'title', event.target.value)} /></label>
         <label>Message<textarea required value={forms.announcement.body} onChange={(event) => updateForm('announcement', 'body', event.target.value)} /></label>
         <Audience value={forms.announcement.audience} onChange={(value) => updateForm('announcement', 'audience', value)} />
+        {editing?.kind !== 'announcement' && <label className="rules-check"><input type="checkbox" checked={forms.announcement.notifyResidents} onChange={(event) => updateForm('announcement', 'notifyResidents', event.target.checked)} /><span>Email residents who subscribe to announcements.</span></label>}
         <FormActions editing={editing?.kind === 'announcement'} label="Publish" onCancel={() => stopEditing('announcement')} />
       </form>} rows={data.announcements.map((item) => <DataRow key={item.id} title={item.title} detail={dateTime(item.publishedAt)} meta={item.audience} actions={<RowActions onEdit={() => beginEdit('announcement', item)} onDelete={() => remove('announcements', item.id, 'Delete this announcement?')} />} />)} />}
 
@@ -204,6 +209,7 @@ export default function Admin() {
         <div className="field-row"><label>Starts<input required type="datetime-local" value={forms.event.startsAt} onChange={(event) => updateForm('event', 'startsAt', event.target.value)} /></label><label>Ends<input required type="datetime-local" value={forms.event.endsAt} onChange={(event) => updateForm('event', 'endsAt', event.target.value)} /></label></div>
         <label>Event type<select value={forms.event.eventType} onChange={(event) => updateForm('event', 'eventType', event.target.value)}><option value="community">Community event</option><option value="meeting">HOA meeting</option></select></label>
         <Audience value={forms.event.audience} onChange={(value) => updateForm('event', 'audience', value)} />
+        {editing?.kind !== 'event' && <label className="rules-check"><input type="checkbox" checked={forms.event.notifyResidents} onChange={(event) => updateForm('event', 'notifyResidents', event.target.checked)} /><span>Email residents who subscribe to event notices.</span></label>}
         <FormActions editing={editing?.kind === 'event'} label="Add event" onCancel={() => stopEditing('event')} />
       </form>} rows={data.events.map((item) => <DataRow key={item.id} title={item.title} detail={dateTime(item.startsAt)} meta={item.status} actions={item.eventType !== 'clubhouse' && <RowActions onEdit={() => beginEdit('event', item)} onDelete={() => remove('events', item.id, 'Cancel this calendar event?')} deleteLabel="Cancel" />} />)} />}
 
@@ -251,4 +257,14 @@ function ReservationReview({ item, onDecide, onCancel }) {
 function MessageReview({ item, onUpdate }) {
   const [notes, setNotes] = useState(item.adminNotes || '')
   return <article className={`message-review status-border-${item.status}`}><header><div><strong>{item.name}</strong><small><a href={`mailto:${item.email}`}>{item.email}</a>{item.phone ? ` | ${item.phone}` : ''}</small></div><span className={`status status-${item.status}`}>{item.status}</span></header><p className="message-category">{item.category} | {dateTime(item.createdAt)}</p><p className="message-body">{item.message}</p><label>Internal notes<textarea maxLength="3000" value={notes} onChange={(event) => setNotes(event.target.value)} /></label><div className="row-actions"><button type="button" onClick={() => onUpdate(item.id, 'read', notes)}>Mark read</button><button type="button" onClick={() => onUpdate(item.id, 'closed', notes)}>Close</button>{item.status === 'closed' && <button type="button" onClick={() => onUpdate(item.id, 'read', notes)}>Reopen</button>}</div></article>
+}
+
+function AccountReview({ account, currentUser, properties, onStatus, onSave }) {
+  const [editing, setEditing] = useState(false)
+  const [form, setForm] = useState({
+    firstName: account.firstName, lastName: account.lastName, email: account.email, phone: account.phone || '',
+    propertyId: account.propertyId, residentType: account.residentType, role: account.role,
+  })
+  const update = (field, value) => setForm({ ...form, [field]: value })
+  return <article className="account-review"><header><div><strong>{account.firstName} {account.lastName}</strong><small>{account.email} | {account.address}</small></div><div><span className={`status status-${account.status}`}>{account.status}</span><span className="account-type">{account.residentType?.replace('_', ' ')}</span></div></header>{editing ? <form onSubmit={async (event) => { event.preventDefault(); if (await onSave(account.id, form)) setEditing(false) }}><div className="field-row"><label>First name<input required value={form.firstName} onChange={(event) => update('firstName', event.target.value)} /></label><label>Last name<input required value={form.lastName} onChange={(event) => update('lastName', event.target.value)} /></label></div><div className="field-row"><label>Email<input required type="email" value={form.email} onChange={(event) => update('email', event.target.value)} /></label><label>Phone<input value={form.phone} onChange={(event) => update('phone', event.target.value)} /></label></div><label>Property<select value={form.propertyId} onChange={(event) => update('propertyId', Number(event.target.value))}>{properties.map((property) => <option value={property.id} key={property.id}>{property.address} ({property.status})</option>)}</select></label><div className="field-row"><label>Resident type<select value={form.residentType} onChange={(event) => update('residentType', event.target.value)}><option value="owner">Owner</option><option value="tenant">Tenant</option><option value="household_member">Household member</option></select></label><label>Access role<select value={form.role} disabled={account.id === currentUser?.id} onChange={(event) => update('role', event.target.value)}><option value="resident">Resident</option><option value="admin">Administrator</option>{currentUser?.role === 'super_admin' && <option value="super_admin">Super administrator</option>}</select></label></div><div className="form-actions"><button className="primary-button">Save resident</button><button type="button" className="quiet-button" onClick={() => setEditing(false)}>Cancel</button></div></form> : <div className="account-review-actions"><button type="button" onClick={() => setEditing(true)}>Edit</button>{account.status !== 'active' && <button type="button" onClick={() => onStatus(account.id, 'active')}>Approve</button>}{account.status === 'active' && account.id !== currentUser?.id && <button type="button" onClick={() => onStatus(account.id, 'suspended')}>Suspend</button>}{account.status === 'pending' && <button type="button" className="row-delete" onClick={() => onStatus(account.id, 'rejected')}>Reject</button>}</div>}</article>
 }

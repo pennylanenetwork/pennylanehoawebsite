@@ -93,6 +93,7 @@ function ResidentHome({ user, onLogout }) {
   const [reservation, setReservation] = useState(emptyReservation)
   const [error, setError] = useState('')
   const [notice, setNotice] = useState('')
+  const [preferences, setPreferences] = useState({ notifyAnnouncements: Boolean(user.notifyAnnouncements), notifyEvents: Boolean(user.notifyEvents) })
 
   async function load() { setData(await api('/api/portal/dashboard')) }
   useEffect(() => { api('/api/portal/dashboard').then(setData).catch((requestError) => setError(requestError.message)) }, [])
@@ -113,7 +114,17 @@ function ResidentHome({ user, onLogout }) {
     catch (requestError) { setError(requestError.message) }
   }
 
-  const tabs = ['overview', 'calendar', 'documents', 'reserve']
+  async function savePreferences(event) {
+    event.preventDefault()
+    setError('')
+    setNotice('')
+    try {
+      await api('/api/portal/preferences', { method: 'PATCH', body: JSON.stringify(preferences) })
+      setNotice('Notification preferences saved.')
+    } catch (requestError) { setError(requestError.message) }
+  }
+
+  const tabs = ['overview', 'calendar', 'documents', 'reserve', 'settings']
   const dateTime = (value) => new Intl.DateTimeFormat('en-US', { dateStyle: 'medium', timeStyle: 'short' }).format(new Date(value))
   return <div className="portal-shell"><PortalHeader /><main className="resident-dashboard">
     <header className="dashboard-heading"><div><p className="portal-kicker">Resident portal</p><h1>Welcome, {user.firstName}.</h1><p className="portal-lead">{user.address}, Lindale, TX 75771</p></div><div className="dashboard-actions">{user.role !== 'resident' && <a className="primary-button" href="/admin">Administration</a>}<button type="button" className="secondary-button" onClick={onLogout}>Sign out</button></div></header>
@@ -123,6 +134,7 @@ function ResidentHome({ user, onLogout }) {
     {tab === 'calendar' && <CalendarView events={data.events} />}
     {tab === 'documents' && <section className="document-list">{data.documents.map((item) => <a href={item.url} target="_blank" rel="noreferrer" key={item.id}><div><strong>{item.title}</strong><small>{item.description || item.category}</small></div><span>{item.category}</span></a>)}{data.documents.length === 0 && <p className="empty-state">No member documents have been added.</p>}</section>}
     {tab === 'reserve' && <div className="reservation-layout"><section className="editor-panel"><h2>Clubhouse request</h2><p className="form-context">Requests are reviewed by an HOA administrator and are not official until approved.</p><form onSubmit={reserve}><label>Event name<input required maxLength="140" value={reservation.eventName} onChange={(event) => setReservation({ ...reservation, eventName: event.target.value })} /></label><label>Type of event<input required maxLength="100" placeholder="Birthday, family gathering, meeting" value={reservation.eventType} onChange={(event) => setReservation({ ...reservation, eventType: event.target.value })} /></label><div className="field-row"><label>Starts<input required type="datetime-local" value={reservation.startsAt} onChange={(event) => setReservation({ ...reservation, startsAt: event.target.value })} /></label><label>Ends<input required type="datetime-local" value={reservation.endsAt} onChange={(event) => setReservation({ ...reservation, endsAt: event.target.value })} /></label></div><label>Expected attendees<input required type="number" min="1" max="65" value={reservation.attendeeCount} onChange={(event) => setReservation({ ...reservation, attendeeCount: event.target.value })} /><span>Maximum 65 under the clubhouse fire-safety limit.</span></label><label>Cleaning plan<select value={reservation.cleaningMethod} onChange={(event) => setReservation({ ...reservation, cleaningMethod: event.target.value })}><option value="self">I will clean the clubhouse</option><option value="professional">I will use a professional cleaner</option></select></label><label>Additional details<textarea maxLength="1500" value={reservation.notes} onChange={(event) => setReservation({ ...reservation, notes: event.target.value })} /></label><ClubhouseRules /><label className="rules-check"><input required type="checkbox" checked={reservation.rulesAcknowledged} onChange={(event) => setReservation({ ...reservation, rulesAcknowledged: event.target.checked })} /><span>I have read and agree to the Reservation Agreement and cleaning checklist. I accept responsibility for the clubhouse, grounds, guests, damages, and the $100 reservation deposit.</span></label><button className="primary-button">Submit request</button></form></section><section className="reservation-history"><h2>Your reservation history</h2>{data.reservations.map((item) => <article className="reservation-record" key={item.id}><header><div><strong>{item.eventName}</strong><small>{dateTime(item.startsAt)} to {dateTime(item.endsAt)}</small></div><span className={`status status-${item.status}`}>{item.status}</span></header><p>{item.eventType} | {item.attendeeCount} attendees | {item.cleaningMethod === 'professional' ? 'Professional cleaner' : 'Self-cleaning'}</p>{item.decisionReason && <p className="decision-reason"><strong>Decision reason:</strong> {item.decisionReason}</p>}{['pending', 'approved'].includes(item.status) && <button type="button" className="quiet-button" onClick={() => cancel(item.id)}>Cancel request</button>}</article>)}{data.reservations.length === 0 && <p className="empty-state">You have no reservation requests.</p>}</section></div>}
+    {tab === 'settings' && <section className="settings-panel"><h2>Email notifications</h2><p>Choose which optional community updates are emailed to you. Account security and reservation decisions are always sent.</p><form onSubmit={savePreferences}><label><input type="checkbox" checked={preferences.notifyAnnouncements} onChange={(event) => setPreferences({ ...preferences, notifyAnnouncements: event.target.checked })} /><span><strong>Announcements</strong><small>Board notices and community updates</small></span></label><label><input type="checkbox" checked={preferences.notifyEvents} onChange={(event) => setPreferences({ ...preferences, notifyEvents: event.target.checked })} /><span><strong>Events</strong><small>New meetings and community events</small></span></label><button className="primary-button">Save preferences</button></form></section>}
   </main></div>
 }
 
