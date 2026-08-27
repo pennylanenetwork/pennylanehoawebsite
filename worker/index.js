@@ -1166,6 +1166,7 @@ async function register(request, env) {
   const email = String(body.email || '').trim().toLowerCase()
   const phone = String(body.phone || '').trim() || null
   const address = String(body.address || '').trim()
+  const residentType = ['owner', 'tenant'].includes(body.residentType) ? body.residentType : 'owner'
 
   if (!firstName || firstName.length > 80 || !lastName || lastName.length > 80) throw new ResponseError('Enter your first and last name.', 400)
   if (!/^\S+@\S+\.\S+$/.test(email) || email.length > 254) throw new ResponseError('Enter a valid email address.', 400)
@@ -1181,20 +1182,21 @@ async function register(request, env) {
   const id = crypto.randomUUID()
   await env.DB.batch([
     env.DB.prepare(`
-      INSERT INTO users (id, property_id, email, first_name, last_name, phone, password_hash, password_salt, password_iterations)
-      VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9)
-    `).bind(id, property.id, email, firstName, lastName, phone, '', '', 0),
+      INSERT INTO users (id, property_id, email, first_name, last_name, phone, resident_type,
+        password_hash, password_salt, password_iterations)
+      VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10)
+    `).bind(id, property.id, email, firstName, lastName, phone, residentType, '', '', 0),
     env.DB.prepare(`
       INSERT INTO audit_log (action, target_type, target_id, details_json)
       VALUES ('account.registered', 'user', ?1, ?2)
-    `).bind(id, JSON.stringify({ propertyId: property.id })),
+    `).bind(id, JSON.stringify({ propertyId: property.id, residentType })),
   ])
   try {
     const admins = await env.DB.prepare(`SELECT email, first_name AS firstName, last_name AS lastName FROM users
       WHERE status = 'active' AND role IN ('admin', 'super_admin')`).all()
     await sendTransactionalEmail(env, admins.results.map((item) => ({ email: item.email, name: `${item.firstName} ${item.lastName}`.trim() })),
       `Resident access request from ${firstName} ${lastName}`,
-      `<p>A new resident access request is awaiting review.</p><p><strong>${escapeHtml(firstName)} ${escapeHtml(lastName)}</strong><br>${escapeHtml(email)}<br>${escapeHtml(address)}, Lindale, TX 75771</p><p>Sign in to the administration dashboard to approve or reject the request.</p>`, 'resident-registration')
+      `<p>A new resident access request is awaiting review.</p><p><strong>${escapeHtml(firstName)} ${escapeHtml(lastName)}</strong><br>${escapeHtml(email)}<br>${escapeHtml(address)}, Lindale, TX 75771<br><strong>Property relationship:</strong> ${residentType === 'tenant' ? 'Renter' : 'Property owner'}</p><p>Sign in to the administration dashboard to approve or reject the request.</p>`, 'resident-registration')
   } catch (error) { console.error(JSON.stringify({ message: 'Registration notification failed', userId: id, detail: String(error) })) }
   return json({ status: 'pending' }, { status: 201 })
 }
