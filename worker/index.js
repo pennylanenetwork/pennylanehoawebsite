@@ -533,7 +533,12 @@ async function adminDashboard(request, env) {
   const [properties, phases, announcements, events, documents, reservations, messages, messageReplies, photos, guests, poolCards,
     clubhouse, blackouts] = await env.DB.batch([
     env.DB.prepare(`SELECT properties.id, properties.street_number || ' ' || properties.street_name || ' ' || properties.street_suffix AS address,
-      properties.status, hoa_phases.name AS phase FROM properties INNER JOIN hoa_phases ON hoa_phases.id = properties.phase_id
+      properties.status, hoa_phases.name AS phase,
+      GROUP_CONCAT(users.first_name || ' ' || users.last_name, ' | ') AS residentNames
+      FROM properties INNER JOIN hoa_phases ON hoa_phases.id = properties.phase_id
+      LEFT JOIN users ON users.property_id = properties.id
+      GROUP BY properties.id, properties.street_number, properties.street_name, properties.street_suffix,
+        properties.status, hoa_phases.name
       ORDER BY properties.street_name, properties.street_number`),
     env.DB.prepare('SELECT id, name, status FROM hoa_phases ORDER BY id'),
     env.DB.prepare('SELECT id, title, body, audience, published_at AS publishedAt FROM announcements ORDER BY published_at DESC'),

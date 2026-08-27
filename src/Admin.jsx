@@ -48,6 +48,7 @@ export default function Admin() {
   const [error, setError] = useState('')
   const [notice, setNotice] = useState('')
   const [selectedProperty, setSelectedProperty] = useState(null)
+  const [propertyQuery, setPropertyQuery] = useState('')
 
   async function load() {
     const [{ user: currentUser }, { users }, dashboard] = await Promise.all([
@@ -240,6 +241,9 @@ export default function Admin() {
   }
 
   const tabs = ['overview', 'accounts', 'properties', 'access', 'in the know', 'announcements', 'events', 'documents', 'photos', 'reservations', 'messages']
+  const normalizedPropertyQuery = propertyQuery.trim().toLowerCase()
+  const visibleProperties = data.properties.filter((property) =>
+    `${property.address} ${property.residentNames || ''}`.toLowerCase().includes(normalizedPropertyQuery))
 
   return <div className="portal-shell admin-shell">
     <header className="portal-header">
@@ -259,11 +263,11 @@ export default function Admin() {
       {tab === 'accounts' && <section><div className="account-tools"><p>{accounts.length} resident accounts</p><a className="quiet-button" href="/api/admin/users.csv">Download CSV</a></div><div className="resident-admin-list">{accounts.map((account) => <AccountReview key={`${account.id}:${account.role}:${account.isBoardMember}:${account.isAccMember}`} account={account} currentUser={user} properties={data.properties} onStatus={updateAccount} onSave={updateAccountProfile} />)}</div></section>}
 
       {tab === 'properties' && selectedProperty && <PropertyDetail propertyId={selectedProperty} isSuperAdmin={user?.role === 'super_admin'} onBack={() => setSelectedProperty(null)} />}
-      {tab === 'properties' && !selectedProperty && <Workspace title="Add property" form={<form onSubmit={(event) => submit('property', 'properties', event)}>
+      {tab === 'properties' && !selectedProperty && <Workspace title="Add property" listHeader={<div className="property-search"><label>Find a property<input type="search" placeholder="Search address or resident name" value={propertyQuery} onChange={(event) => setPropertyQuery(event.target.value)} /></label><span>{visibleProperties.length} of {data.properties.length} properties</span></div>} form={<form onSubmit={(event) => submit('property', 'properties', event)}>
         <label>Street address<input required placeholder="800 Abbey Rd" value={forms.property.address} onChange={(event) => updateForm('property', 'address', event.target.value)} /></label>
         <label>Phase<input required value={forms.property.phaseName} onChange={(event) => updateForm('property', 'phaseName', event.target.value)} /></label>
         <button className="primary-button">Add property</button>
-      </form>} rows={data.properties.map((item) => <DataRow key={item.id} title={item.address} detail={item.phase} meta={item.status} onOpen={() => setSelectedProperty(item.id)} actions={<select aria-label={`Status for ${item.address}`} value={item.status} onChange={(event) => setPropertyStatus(item.id, event.target.value)}><option value="active">Active</option><option value="planned">Planned</option><option value="inactive">Inactive</option></select>} />)} />}
+      </form>} rows={visibleProperties.map((item) => <DataRow key={item.id} title={item.address} detail={item.residentNames ? `${item.phase} | ${item.residentNames}` : item.phase} meta={item.status} onOpen={() => setSelectedProperty(item.id)} actions={<select aria-label={`Status for ${item.address}`} value={item.status} onChange={(event) => setPropertyStatus(item.id, event.target.value)}><option value="active">Active</option><option value="planned">Planned</option><option value="inactive">Inactive</option></select>} />)} />}
 
       {tab === 'access' && <AccessWorkspace guests={data.guests} poolCards={data.poolCards} />}
 
@@ -350,8 +354,8 @@ function Audience({ value, onChange }) {
   return <label>Visibility<select value={value} onChange={(event) => onChange(event.target.value)}><option value="members">Members only</option><option value="public">Public</option></select></label>
 }
 
-function Workspace({ title, form, rows }) {
-  return <div className="workspace-grid"><section className="editor-panel"><h2>{title}</h2>{form}</section><section className="data-list">{rows}{rows.length === 0 && <p className="empty-state">Nothing has been added yet.</p>}</section></div>
+function Workspace({ title, form, rows, listHeader = null }) {
+  return <div className="workspace-grid"><section className="editor-panel"><h2>{title}</h2>{form}</section><section className="data-list">{listHeader}{rows}{rows.length === 0 && <p className="empty-state">No matching records.</p>}</section></div>
 }
 
 function FormActions({ editing, label, onCancel }) {
