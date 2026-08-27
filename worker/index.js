@@ -859,7 +859,7 @@ async function propertyDetails(request, env, propertyId) {
     FROM properties INNER JOIN hoa_phases ON hoa_phases.id = properties.phase_id WHERE properties.id = ?1`)
     .bind(propertyId).first()
   if (!property) throw new ResponseError('Property not found.', 404)
-  const [residents, reservations, contacts, communications, audit] = await env.DB.batch([
+  const [residents, reservations, contacts, communications, poolCards, audit] = await env.DB.batch([
     env.DB.prepare(`SELECT id, first_name AS firstName, last_name AS lastName, email, phone, resident_type AS residentType,
       role, status, created_at AS createdAt, last_login_at AS lastLoginAt FROM users WHERE property_id = ?1
       ORDER BY CASE resident_type WHEN 'owner' THEN 0 WHEN 'tenant' THEN 1 ELSE 2 END, last_name, first_name`).bind(propertyId),
@@ -873,6 +873,12 @@ async function propertyDetails(request, env, propertyId) {
     env.DB.prepare(`SELECT id, user_id AS userId, direction, channel, recipient_or_sender AS correspondent,
       subject, summary, delivery_status AS deliveryStatus, related_type AS relatedType, created_at AS createdAt
       FROM communication_log WHERE property_id = ?1 ORDER BY created_at DESC LIMIT 200`).bind(propertyId),
+    env.DB.prepare(`SELECT pool_access_cards.id, pool_access_cards.card_number AS cardNumber,
+      pool_access_cards.assigned_user_id AS assignedUserId, pool_access_cards.status, pool_access_cards.notes,
+      pool_access_cards.issued_at AS issuedAt, pool_access_cards.updated_at AS updatedAt,
+      assigned.first_name || ' ' || assigned.last_name AS assignedName
+      FROM pool_access_cards LEFT JOIN users AS assigned ON assigned.id = pool_access_cards.assigned_user_id
+      WHERE pool_access_cards.property_id = ?1 ORDER BY pool_access_cards.issued_at DESC`).bind(propertyId),
     env.DB.prepare(`SELECT audit_log.id, audit_log.action, audit_log.target_type AS targetType,
       audit_log.target_id AS targetId, audit_log.details_json AS detailsJson, audit_log.created_at AS createdAt,
       actor.first_name || ' ' || actor.last_name AS actorName FROM audit_log
@@ -882,7 +888,58 @@ async function propertyDetails(request, env, propertyId) {
       ORDER BY audit_log.created_at DESC LIMIT 100`).bind(propertyId),
   ])
   return json({ property, residents: residents.results, reservations: reservations.results,
-    contacts: contacts.results, communications: communications.results, audit: audit.results })
+    contacts: contacts.results, communications: communications.results, poolCards: poolCards.results, audit: audit.results })
+}
+
+async function createPoolCard(request, env, propertyId) {
+  const admin = await requireAdmin(request, env)
+  const body = await readJson(request)
+  const cardNumber = cleanText(body.cardNumber, 100, true).toUpperCase()
+  const notes = cleanText(body.notes, 1000)
+  const assignedUserId = cleanText(body.assignedUserId, 100)
+  const property = await env.DB.prepare('SELECT id FROM properties WHERE id = ?1').bind(propertyId).first()
+  if (!property) throw new ResponseError('Property not found.', 404)
+  if (assignedUserId) {
+    const resident = await env.DB.prepare('SELECT id FROM users WHERE id = ?1 AND property_id = ?2').bind(assignedUserId, propertyId).first()
+    if (!resident) throw new ResponseError('Select a resident registered to this property.', 400)
+  }
+  const id = crypto.randomUUID()
+  try {
+    await env.DB.batch([
+      env.DB.prepare(`INSERT INTO pool_access_cards (id, card_number, property_id, assigned_user_id, notes, updated_by)
+        VALUES (?1, ?2, ?3, ?4, ?5, ?6)`).bind(id, cardNumber, propertyId, assignedUserId, notes, admin.id),
+      env.DB.prepare(`INSERT INTO audit_log (actor_user_id, action, target_type, target_id, details_json)
+        VALUES (?1, 'pool_card.issued', 'property', ?2, ?3)`).bind(admin.id, String(propertyId),
+        JSON.stringify({ poolCardId: id, cardNumber, assignedUserId })),
+    ])
+  } catch (error) {
+    if (String(error).includes('UNIQUE')) throw new ResponseError('That pool card ID is already recorded.', 409)
+    throw error
+  }
+  return json({ id, status: 'active' }, { status: 201 })
+}
+
+async function updatePoolCard(request, env, id) {
+  const admin = await requireAdmin(request, env)
+  const body = await readJson(request)
+  const status = ['active', 'lost', 'stolen', 'returned', 'deactivated'].includes(body.status) ? body.status : null
+  if (!status) throw new ResponseError('Select a valid pool card status.', 400)
+  const existing = await env.DB.prepare('SELECT property_id AS propertyId, card_number AS cardNumber FROM pool_access_cards WHERE id = ?1').bind(id).first()
+  if (!existing) throw new ResponseError('Pool card not found.', 404)
+  const assignedUserId = cleanText(body.assignedUserId, 100)
+  if (assignedUserId) {
+    const resident = await env.DB.prepare('SELECT id FROM users WHERE id = ?1 AND property_id = ?2').bind(assignedUserId, existing.propertyId).first()
+    if (!resident) throw new ResponseError('Select a resident registered to this property.', 400)
+  }
+  const notes = cleanText(body.notes, 1000)
+  await env.DB.batch([
+    env.DB.prepare(`UPDATE pool_access_cards SET assigned_user_id = ?1, status = ?2, notes = ?3,
+      updated_at = CURRENT_TIMESTAMP, updated_by = ?4 WHERE id = ?5`).bind(assignedUserId, status, notes, admin.id, id),
+    env.DB.prepare(`INSERT INTO audit_log (actor_user_id, action, target_type, target_id, details_json)
+      VALUES (?1, 'pool_card.updated', 'property', ?2, ?3)`).bind(admin.id, String(existing.propertyId),
+      JSON.stringify({ poolCardId: id, cardNumber: existing.cardNumber, status, assignedUserId })),
+  ])
+  return json({ status })
 }
 
 async function updateAnnouncement(request, env, id) {
@@ -1305,6 +1362,10 @@ async function handleApi(request, env) {
   if (request.method === 'POST' && url.pathname === '/api/admin/documents') return createDocument(request, env)
   if (request.method === 'POST' && url.pathname === '/api/admin/documents/upload') return uploadDocument(request, env)
   if (request.method === 'POST' && url.pathname === '/api/admin/gallery') return uploadGalleryPhoto(request, env)
+  const propertyPoolCardsMatch = url.pathname.match(/^\/api\/admin\/properties\/([^/]+)\/pool-cards$/)
+  if (propertyPoolCardsMatch && request.method === 'POST') return createPoolCard(request, env, propertyPoolCardsMatch[1])
+  const poolCardMatch = url.pathname.match(/^\/api\/admin\/pool-cards\/([^/]+)$/)
+  if (poolCardMatch && request.method === 'PATCH') return updatePoolCard(request, env, poolCardMatch[1])
   const adminGalleryImageMatch = url.pathname.match(/^\/api\/admin\/gallery\/([^/]+)\/image$/)
   if (adminGalleryImageMatch && request.method === 'GET') return adminGalleryImage(request, env, adminGalleryImageMatch[1])
   const propertyMatch = url.pathname.match(/^\/api\/admin\/properties\/([^/]+)$/)
