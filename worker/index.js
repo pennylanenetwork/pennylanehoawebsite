@@ -482,6 +482,8 @@ async function adminGalleryImage(request, env, id) {
 
 async function uploadGalleryPhoto(request, env) {
   const admin = await requireAdmin(request, env)
+  const photoCount = await env.DB.prepare('SELECT COUNT(*) AS count FROM gallery_photos').first('count')
+  if (photoCount >= 15) throw new ResponseError('The gallery is limited to 15 photos. Delete a photo before uploading another.', 409)
   const contentLength = Number(request.headers.get('content-length'))
   if (!Number.isFinite(contentLength) || contentLength <= 0 || contentLength > MAX_GALLERY_BYTES + 65536) {
     throw new ResponseError('Photos must be 10 MB or smaller.', 413)
