@@ -472,7 +472,7 @@ async function clubhouseAvailability(env, startsAt, endsAt, excludeReservationId
 
 async function portalDashboard(request, env) {
   const user = await requireUser(request, env)
-  const [announcements, events, documents, reservations, messages, messageReplies, guests, household] = await env.DB.batch([
+  const [announcements, events, documents, reservations, messages, messageReplies, guests, household, poolCards, poolAgreements] = await env.DB.batch([
     env.DB.prepare(`SELECT id, title, body, audience, published_at AS publishedAt FROM announcements
       WHERE published_at <= CURRENT_TIMESTAMP ORDER BY published_at DESC LIMIT 20`),
     env.DB.prepare(`SELECT id, title, description, starts_at AS startsAt, ends_at AS endsAt,
@@ -499,6 +499,16 @@ async function portalDashboard(request, env) {
     env.DB.prepare(`SELECT id, first_name AS firstName, last_name AS lastName, email, phone, status,
       created_at AS createdAt FROM users WHERE property_id = ?1 AND resident_type = 'household_member'
       ORDER BY created_at DESC`).bind(user.propertyId),
+    env.DB.prepare(`SELECT pool_access_cards.id, pool_access_cards.card_number AS cardNumber,
+      pool_access_cards.status, pool_access_cards.notes, pool_access_cards.issued_at AS issuedAt,
+      assigned.first_name || ' ' || assigned.last_name AS assignedName
+      FROM pool_access_cards LEFT JOIN users AS assigned ON assigned.id = pool_access_cards.assigned_user_id
+      WHERE pool_access_cards.property_id = ?1 ORDER BY pool_access_cards.issued_at DESC`).bind(user.propertyId),
+    env.DB.prepare(`SELECT pool_rules_agreements.id, pool_rules_agreements.rules_version AS rulesVersion,
+      pool_rules_agreements.acknowledged_at AS acknowledgedAt,
+      users.first_name || ' ' || users.last_name AS signedByName
+      FROM pool_rules_agreements INNER JOIN users ON users.id = pool_rules_agreements.user_id
+      WHERE pool_rules_agreements.property_id = ?1 ORDER BY pool_rules_agreements.acknowledged_at DESC`).bind(user.propertyId),
   ])
   const repliesByMessage = messageReplies.results.reduce((result, reply) => {
     if (!result[reply.messageId]) result[reply.messageId] = []
@@ -513,6 +523,8 @@ async function portalDashboard(request, env) {
     messages: messages.results.map((message) => ({ ...message, replies: repliesByMessage[message.id] || [] })),
     guests: guests.results,
     household: user.residentType === 'owner' ? household.results : [],
+    poolCards: poolCards.results,
+    poolAgreements: poolAgreements.results,
   })
 }
 
@@ -1169,7 +1181,7 @@ async function propertyDetails(request, env, propertyId) {
     FROM properties INNER JOIN hoa_phases ON hoa_phases.id = properties.phase_id WHERE properties.id = ?1`)
     .bind(propertyId).first()
   if (!property) throw new ResponseError('Property not found.', 404)
-  const [residents, reservations, contacts, communications, poolCards, guests, audit] = await env.DB.batch([
+  const [residents, reservations, contacts, communications, poolCards, guests, poolAgreements, audit] = await env.DB.batch([
     env.DB.prepare(`SELECT id, first_name AS firstName, last_name AS lastName, email, phone, resident_type AS residentType,
       role, status, created_at AS createdAt, last_login_at AS lastLoginAt FROM users WHERE property_id = ?1
       ORDER BY CASE resident_type WHEN 'owner' THEN 0 WHEN 'tenant' THEN 1 ELSE 2 END, last_name, first_name`).bind(propertyId),
@@ -1197,6 +1209,12 @@ async function propertyDetails(request, env, propertyId) {
       users.first_name || ' ' || users.last_name AS registeredByName
       FROM guest_registrations INNER JOIN users ON users.id = guest_registrations.registered_by
       WHERE guest_registrations.property_id = ?1 ORDER BY guest_registrations.created_at DESC LIMIT 200`).bind(propertyId),
+    env.DB.prepare(`SELECT pool_rules_agreements.id, pool_rules_agreements.user_id AS userId,
+      pool_rules_agreements.rules_version AS rulesVersion, pool_rules_agreements.acknowledgement_text AS acknowledgementText,
+      pool_rules_agreements.acknowledged_at AS acknowledgedAt, users.first_name || ' ' || users.last_name AS signedByName,
+      users.email, users.resident_type AS residentType FROM pool_rules_agreements
+      INNER JOIN users ON users.id = pool_rules_agreements.user_id
+      WHERE pool_rules_agreements.property_id = ?1 ORDER BY pool_rules_agreements.acknowledged_at DESC`).bind(propertyId),
     env.DB.prepare(`SELECT audit_log.id, audit_log.action, audit_log.target_type AS targetType,
       audit_log.target_id AS targetId, audit_log.details_json AS detailsJson, audit_log.created_at AS createdAt,
       actor.first_name || ' ' || actor.last_name AS actorName FROM audit_log
@@ -1207,7 +1225,7 @@ async function propertyDetails(request, env, propertyId) {
   ])
   return json({ property, residents: residents.results, reservations: reservations.results,
     contacts: contacts.results, communications: communications.results, poolCards: poolCards.results,
-    guests: guests.results, audit: audit.results })
+    guests: guests.results, poolAgreements: poolAgreements.results, audit: audit.results })
 }
 
 async function createPoolCard(request, env, propertyId) {
@@ -1507,11 +1525,13 @@ async function register(request, env) {
   const phone = String(body.phone || '').trim() || null
   const address = String(body.address || '').trim()
   const residentType = ['owner', 'tenant'].includes(body.residentType) ? body.residentType : 'owner'
+  const poolRulesAcknowledged = body.poolRulesAcknowledged === true
 
   if (!firstName || firstName.length > 80 || !lastName || lastName.length > 80) throw new ResponseError('Enter your first and last name.', 400)
   if (!/^\S+@\S+\.\S+$/.test(email) || email.length > 254) throw new ResponseError('Enter a valid email address.', 400)
   if (phone && phone.length > 30) throw new ResponseError('Enter a valid phone number.', 400)
   if (!address || address.length > 160) throw new ResponseError('Enter a valid Penny Lane Estates address.', 400)
+  if (residentType === 'owner' && !poolRulesAcknowledged) throw new ResponseError('Property owners must accept the pool rules and access-card guidelines.', 400)
 
   const property = await findActiveProperty(env, address)
   if (!property) throw new ResponseError('That address was not found in Penny Lane Estates.', 400)
@@ -1520,7 +1540,7 @@ async function register(request, env) {
   if (existing) throw new ResponseError('An account request already exists for this email address.', 409)
 
   const id = crypto.randomUUID()
-  await env.DB.batch([
+  const statements = [
     env.DB.prepare(`
       INSERT INTO users (id, property_id, email, first_name, last_name, phone, resident_type,
         password_hash, password_salt, password_iterations)
@@ -1530,7 +1550,13 @@ async function register(request, env) {
       INSERT INTO audit_log (action, target_type, target_id, details_json)
       VALUES ('account.registered', 'user', ?1, ?2)
     `).bind(id, JSON.stringify({ propertyId: property.id, residentType })),
-  ])
+  ]
+  if (residentType === 'owner') {
+    statements.push(env.DB.prepare(`INSERT INTO pool_rules_agreements
+      (id, property_id, user_id, rules_version, acknowledgement_text) VALUES (?1, ?2, ?3, '2026-08', ?4)`)
+      .bind(crypto.randomUUID(), property.id, id, 'I have read and agree to the Penny Lane Estates pool rules and access-card guidelines. I accept responsibility for my household and guests, understand that violations may result in suspended pool privileges, and accept the $20 fee for a lost or replacement access card.'))
+  }
+  await env.DB.batch(statements)
   try {
     const admins = await env.DB.prepare(`SELECT email, first_name AS firstName, last_name AS lastName FROM users
       WHERE status = 'active' AND role IN ('admin', 'super_admin')`).all()
