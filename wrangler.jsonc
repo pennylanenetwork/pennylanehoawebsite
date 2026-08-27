@@ -18,6 +18,12 @@
       "migrations_dir": "./migrations"
     }
   ],
+  "r2_buckets": [
+    {
+      "binding": "DOCUMENTS",
+      "bucket_name": "penny-lane-hoa-documents"
+    }
+  ],
   "services": [
     {
       "binding": "TURNSTILE",

@@ -6,11 +6,12 @@ export class ApiError extends Error {
 }
 
 export async function api(path, options = {}) {
+  const isFormData = options.body instanceof FormData
   const response = await fetch(path, {
     credentials: 'same-origin',
     ...options,
     headers: {
-      ...(options.body ? { 'content-type': 'application/json' } : {}),
+      ...(options.body && !isFormData ? { 'content-type': 'application/json' } : {}),
       ...options.headers,
     },
   })

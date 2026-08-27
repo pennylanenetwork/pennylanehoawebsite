@@ -10,6 +10,16 @@ const LOGIN_CODE_SECONDS = 60 * 10
 const LOGIN_CODE_MAX_ATTEMPTS = 5
 const LOGIN_CODE_RATE_SECONDS = 60
 const MAX_BODY_BYTES = 16384
+const MAX_DOCUMENT_BYTES = 15 * 1024 * 1024
+const DOCUMENT_TYPES = new Set([
+  'application/pdf',
+  'application/msword',
+  'application/vnd.openxmlformats-officedocument.wordprocessingml.document',
+  'application/vnd.ms-excel',
+  'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
+  'image/jpeg',
+  'image/png',
+])
 
 function json(data, init = {}) {
   return new Response(JSON.stringify(data), {
@@ -345,7 +355,8 @@ async function adminDashboard(request, env) {
     env.DB.prepare('SELECT id, title, body, audience, published_at AS publishedAt FROM announcements ORDER BY published_at DESC'),
     env.DB.prepare(`SELECT id, title, description, starts_at AS startsAt, ends_at AS endsAt, audience, event_type AS eventType, status
       FROM events ORDER BY starts_at DESC LIMIT 100`),
-    env.DB.prepare('SELECT id, title, description, category, audience, document_url AS url FROM documents ORDER BY category, title'),
+    env.DB.prepare(`SELECT id, title, description, category, audience, document_url AS url,
+      storage_key AS storageKey, original_name AS originalName, file_size AS fileSize FROM documents ORDER BY category, title`),
     env.DB.prepare(`SELECT clubhouse_reservations.id, clubhouse_reservations.event_name AS eventName,
       clubhouse_reservations.starts_at AS startsAt, clubhouse_reservations.ends_at AS endsAt,
       clubhouse_reservations.attendee_count AS attendeeCount, clubhouse_reservations.status,
@@ -416,6 +427,97 @@ async function createDocument(request, env) {
     VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)`).bind(id, cleanText(body.title, 140, true), cleanText(body.description, 1000),
     url, cleanText(body.category || 'General', 80, true), audience, admin.id).run()
   return json({ id }, { status: 201 })
+}
+
+function safeFileName(value) {
+  const name = String(value || 'document').replace(/[\r\n"\\/]/g, '_').slice(0, 180)
+  return name || 'document'
+}
+
+async function readDocumentForm(request) {
+  const contentLength = Number(request.headers.get('content-length'))
+  if (!Number.isFinite(contentLength) || contentLength <= 0 || contentLength > MAX_DOCUMENT_BYTES + 65536) {
+    throw new ResponseError('Files must be 15 MB or smaller.', 413)
+  }
+  const form = await request.formData()
+  const file = form.get('file')
+  if (!(file instanceof File) || file.size <= 0) throw new ResponseError('Choose a document to upload.', 400)
+  if (file.size > MAX_DOCUMENT_BYTES) throw new ResponseError('Files must be 15 MB or smaller.', 413)
+  if (!DOCUMENT_TYPES.has(file.type)) throw new ResponseError('Upload a PDF, Word, Excel, JPEG, or PNG file.', 400)
+  const audience = ['public', 'members'].includes(form.get('audience')) ? form.get('audience') : 'members'
+  return {
+    file,
+    title: cleanText(form.get('title'), 140, true),
+    description: cleanText(form.get('description'), 1000),
+    category: cleanText(form.get('category') || 'General', 80, true),
+    audience,
+  }
+}
+
+async function uploadDocument(request, env) {
+  const admin = await requireAdmin(request, env)
+  const input = await readDocumentForm(request)
+  const id = crypto.randomUUID()
+  const originalName = safeFileName(input.file.name)
+  const extension = originalName.includes('.') ? originalName.slice(originalName.lastIndexOf('.')).toLowerCase().replace(/[^.a-z0-9]/g, '') : ''
+  const storageKey = `documents/${id}/${crypto.randomUUID()}${extension}`
+  await env.DOCUMENTS.put(storageKey, input.file.stream(), {
+    httpMetadata: { contentType: input.file.type, contentDisposition: `attachment; filename="${originalName}"` },
+    customMetadata: { uploadedBy: admin.id, documentId: id },
+  })
+  try {
+    await env.DB.prepare(`INSERT INTO documents (id, title, description, document_url, category, audience, created_by,
+      storage_key, original_name, mime_type, file_size) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11)`)
+      .bind(id, input.title, input.description, `/api/documents/${id}/download`, input.category, input.audience,
+        admin.id, storageKey, originalName, input.file.type, input.file.size).run()
+  } catch (error) {
+    await env.DOCUMENTS.delete(storageKey)
+    throw error
+  }
+  return json({ id }, { status: 201 })
+}
+
+async function replaceDocument(request, env, id) {
+  const admin = await requireAdmin(request, env)
+  const existing = await env.DB.prepare('SELECT storage_key AS storageKey FROM documents WHERE id = ?1').bind(id).first()
+  if (!existing) throw new ResponseError('Document not found.', 404)
+  const input = await readDocumentForm(request)
+  const originalName = safeFileName(input.file.name)
+  const extension = originalName.includes('.') ? originalName.slice(originalName.lastIndexOf('.')).toLowerCase().replace(/[^.a-z0-9]/g, '') : ''
+  const storageKey = `documents/${id}/${crypto.randomUUID()}${extension}`
+  await env.DOCUMENTS.put(storageKey, input.file.stream(), {
+    httpMetadata: { contentType: input.file.type, contentDisposition: `attachment; filename="${originalName}"` },
+    customMetadata: { uploadedBy: admin.id, documentId: id },
+  })
+  try {
+    await env.DB.prepare(`UPDATE documents SET title = ?1, description = ?2, document_url = ?3, category = ?4,
+      audience = ?5, storage_key = ?6, original_name = ?7, mime_type = ?8, file_size = ?9,
+      updated_at = CURRENT_TIMESTAMP WHERE id = ?10`).bind(input.title, input.description, `/api/documents/${id}/download`,
+      input.category, input.audience, storageKey, originalName, input.file.type, input.file.size, id).run()
+  } catch (error) {
+    await env.DOCUMENTS.delete(storageKey)
+    throw error
+  }
+  if (existing.storageKey) await env.DOCUMENTS.delete(existing.storageKey)
+  return json({ status: 'updated' })
+}
+
+async function downloadDocument(request, env, id) {
+  const document = await env.DB.prepare(`SELECT audience, storage_key AS storageKey, original_name AS originalName,
+    mime_type AS mimeType FROM documents WHERE id = ?1`).bind(id).first()
+  if (!document || !document.storageKey) throw new ResponseError('Document not found.', 404)
+  if (document.audience !== 'public') await requireUser(request, env)
+  const object = await env.DOCUMENTS.get(document.storageKey)
+  if (!object) throw new ResponseError('Document file not found.', 404)
+  return new Response(object.body, {
+    headers: {
+      'cache-control': document.audience === 'public' ? 'public, max-age=300' : 'private, no-store',
+      'content-disposition': `attachment; filename="${safeFileName(document.originalName)}"`,
+      'content-length': String(object.size),
+      'content-type': document.mimeType || 'application/octet-stream',
+      'x-content-type-options': 'nosniff',
+    },
+  })
 }
 
 async function updateProperty(request, env, propertyId) {
@@ -490,8 +592,11 @@ async function updateDocument(request, env, id) {
 
 async function deleteDocument(request, env, id) {
   await requireAdmin(request, env)
+  const document = await env.DB.prepare('SELECT storage_key AS storageKey FROM documents WHERE id = ?1').bind(id).first()
+  if (!document) throw new ResponseError('Document not found.', 404)
   const result = await env.DB.prepare('DELETE FROM documents WHERE id = ?1').bind(id).run()
   if (!result.meta.changes) throw new ResponseError('Document not found.', 404)
+  if (document.storageKey) await env.DOCUMENTS.delete(document.storageKey)
   return json({ status: 'deleted' })
 }
 
@@ -684,6 +789,8 @@ async function handleApi(request, env) {
     return json({ status: 'ok', activeProperties: propertyCount })
   }
   if (request.method === 'GET' && url.pathname === '/api/public/content') return publicContent(env)
+  const downloadMatch = url.pathname.match(/^\/api\/documents\/([^/]+)\/download$/)
+  if (downloadMatch && request.method === 'GET') return downloadDocument(request, env, downloadMatch[1])
   if (request.method === 'GET' && url.pathname === '/api/auth/session') return json({ user: await currentUser(request, env) })
   if (request.method === 'GET' && url.pathname === '/api/auth/google/start') return startGoogleAuth(request, env)
   if (request.method === 'GET' && url.pathname === '/api/auth/google/callback') return finishGoogleAuth(request, env)
@@ -701,6 +808,7 @@ async function handleApi(request, env) {
   if (request.method === 'POST' && url.pathname === '/api/admin/announcements') return createAnnouncement(request, env)
   if (request.method === 'POST' && url.pathname === '/api/admin/events') return createEvent(request, env)
   if (request.method === 'POST' && url.pathname === '/api/admin/documents') return createDocument(request, env)
+  if (request.method === 'POST' && url.pathname === '/api/admin/documents/upload') return uploadDocument(request, env)
   const propertyMatch = url.pathname.match(/^\/api\/admin\/properties\/([^/]+)$/)
   if (propertyMatch && request.method === 'PATCH') return updateProperty(request, env, propertyMatch[1])
   const announcementMatch = url.pathname.match(/^\/api\/admin\/announcements\/([^/]+)$/)
@@ -712,6 +820,8 @@ async function handleApi(request, env) {
   const documentMatch = url.pathname.match(/^\/api\/admin\/documents\/([^/]+)$/)
   if (documentMatch && request.method === 'PATCH') return updateDocument(request, env, documentMatch[1])
   if (documentMatch && request.method === 'DELETE') return deleteDocument(request, env, documentMatch[1])
+  const documentUploadMatch = url.pathname.match(/^\/api\/admin\/documents\/([^/]+)\/upload$/)
+  if (documentUploadMatch && request.method === 'PUT') return replaceDocument(request, env, documentUploadMatch[1])
   const adminReservationMatch = url.pathname.match(/^\/api\/admin\/reservations\/([^/]+)$/)
   if (adminReservationMatch && request.method === 'DELETE') return cancelReservation(request, env, adminReservationMatch[1])
   const statusMatch = url.pathname.match(/^\/api\/admin\/users\/([^/]+)\/status$/)

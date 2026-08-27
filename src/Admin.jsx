@@ -26,6 +26,8 @@ export default function Admin() {
   const [data, setData] = useState({ properties: [], announcements: [], events: [], documents: [], reservations: [] })
   const [forms, setForms] = useState(emptyForms)
   const [editing, setEditing] = useState(null)
+  const [documentMode, setDocumentMode] = useState('upload')
+  const [documentFile, setDocumentFile] = useState(null)
   const [error, setError] = useState('')
   const [notice, setNotice] = useState('')
 
@@ -75,6 +77,30 @@ export default function Admin() {
     } catch (requestError) { setError(requestError.message) }
   }
 
+  async function submitDocument(event) {
+    if (documentMode === 'link') return submit('document', 'documents', event)
+    event.preventDefault()
+    setError('')
+    setNotice('')
+    try {
+      if (!documentFile) throw new Error('Choose a document to upload.')
+      const form = new FormData()
+      for (const [key, value] of Object.entries(forms.document)) {
+        if (key !== 'url') form.append(key, value)
+      }
+      form.append('file', documentFile)
+      const isEditing = editing?.kind === 'document'
+      await api(`/api/admin/documents${isEditing ? `/${editing.id}` : ''}/upload`, {
+        method: isEditing ? 'PUT' : 'POST', body: form,
+      })
+      setForms({ ...forms, document: emptyForms.document })
+      setDocumentFile(null)
+      setEditing(null)
+      setNotice('Document uploaded successfully.')
+      await load()
+    } catch (requestError) { setError(requestError.message) }
+  }
+
   function updateForm(kind, field, value) {
     setForms({ ...forms, [kind]: { ...forms[kind], [field]: value } })
   }
@@ -85,6 +111,7 @@ export default function Admin() {
     if (form.endsAt) form.endsAt = localDateTime(form.endsAt)
     setForms({ ...forms, [kind]: { ...emptyForms[kind], ...form } })
     setEditing({ kind, id: item.id })
+    if (kind === 'document') { setDocumentMode(item.storageKey ? 'upload' : 'link'); setDocumentFile(null) }
     setError('')
     setNotice('')
   }
@@ -92,6 +119,7 @@ export default function Admin() {
   function stopEditing(kind) {
     setForms({ ...forms, [kind]: emptyForms[kind] })
     setEditing(null)
+    if (kind === 'document') setDocumentFile(null)
   }
 
   async function remove(endpoint, id, message) {
@@ -159,14 +187,15 @@ export default function Admin() {
         <FormActions editing={editing?.kind === 'event'} label="Add event" onCancel={() => stopEditing('event')} />
       </form>} rows={data.events.map((item) => <DataRow key={item.id} title={item.title} detail={dateTime(item.startsAt)} meta={item.status} actions={item.eventType !== 'clubhouse' && <RowActions onEdit={() => beginEdit('event', item)} onDelete={() => remove('events', item.id, 'Cancel this calendar event?')} deleteLabel="Cancel" />} />)} />}
 
-      {tab === 'documents' && <Workspace title={editing?.kind === 'document' ? 'Edit document link' : 'Add document link'} form={<form onSubmit={(event) => submit('document', 'documents', event)}>
+      {tab === 'documents' && <Workspace title={editing?.kind === 'document' ? 'Edit document' : 'Add document'} form={<form onSubmit={submitDocument}>
+        <label>Storage<select value={documentMode} disabled={editing?.kind === 'document'} onChange={(event) => setDocumentMode(event.target.value)}><option value="upload">Upload to this site</option><option value="link">External HTTPS link</option></select></label>
         <label>Title<input required value={forms.document.title} onChange={(event) => updateForm('document', 'title', event.target.value)} /></label>
         <label>Description<textarea value={forms.document.description} onChange={(event) => updateForm('document', 'description', event.target.value)} /></label>
-        <label>HTTPS file link<input required type="url" value={forms.document.url} onChange={(event) => updateForm('document', 'url', event.target.value)} /></label>
+        {documentMode === 'upload' ? <label>{editing?.kind === 'document' ? 'Replacement file' : 'File'}<input required type="file" accept=".pdf,.doc,.docx,.xls,.xlsx,.jpg,.jpeg,.png" onChange={(event) => setDocumentFile(event.target.files[0] || null)} /><span>PDF, Word, Excel, JPEG, or PNG. Maximum 15 MB.</span></label> : <label>HTTPS file link<input required type="url" value={forms.document.url} onChange={(event) => updateForm('document', 'url', event.target.value)} /></label>}
         <label>Category<input required value={forms.document.category} onChange={(event) => updateForm('document', 'category', event.target.value)} /></label>
         <Audience value={forms.document.audience} onChange={(value) => updateForm('document', 'audience', value)} />
-        <FormActions editing={editing?.kind === 'document'} label="Add document" onCancel={() => stopEditing('document')} />
-      </form>} rows={data.documents.map((item) => <DataRow key={item.id} title={item.title} detail={item.category} meta={item.audience} actions={<RowActions onEdit={() => beginEdit('document', item)} onDelete={() => remove('documents', item.id, 'Delete this document link?')} />} />)} />}
+        <FormActions editing={editing?.kind === 'document'} label={documentMode === 'upload' ? 'Upload document' : 'Add document'} onCancel={() => stopEditing('document')} />
+      </form>} rows={data.documents.map((item) => <DataRow key={item.id} title={item.title} detail={`${item.category}${item.originalName ? ` | ${item.originalName}` : ''}`} meta={item.audience} actions={<RowActions onEdit={() => beginEdit('document', item)} onDelete={() => remove('documents', item.id, 'Delete this document?')} />} />)} />}
 
       {tab === 'reservations' && <div className="data-list">{data.reservations.map((item) => <DataRow key={item.id} title={item.eventName} detail={`${item.residentName} | ${dateTime(item.startsAt)}`} meta={item.status} actions={item.status === 'confirmed' && <button type="button" className="row-delete" onClick={() => remove('reservations', item.id, 'Cancel this clubhouse reservation?')}>Cancel</button>} />)}{data.reservations.length === 0 && <p className="empty-state">No clubhouse reservations yet.</p>}</div>}
     </main>
