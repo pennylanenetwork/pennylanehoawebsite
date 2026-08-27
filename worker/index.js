@@ -233,7 +233,7 @@ async function activeAdminRecipients(env) {
 
 async function messageRecipients(env, category) {
   let condition = "role IN ('admin', 'super_admin')"
-  if (category === 'board') condition = "is_board_member = 1 OR role = 'super_admin'"
+  if (['general', 'maintenance', 'board'].includes(category)) condition = "is_board_member = 1 OR role = 'super_admin'"
   if (category === 'architectural') condition = "is_acc_member = 1 OR role = 'super_admin'"
   const result = await env.DB.prepare(`SELECT email, first_name AS firstName, last_name AS lastName FROM users
     WHERE status = 'active' AND (${condition}) ORDER BY id`).all()
@@ -402,8 +402,7 @@ async function requireSuperAdmin(request, env) {
 }
 
 function canAccessMessage(user, category) {
-  return user.role === 'super_admin' || ['general', 'maintenance'].includes(category)
-    || category === 'board' && Boolean(user.isBoardMember)
+  return user.role === 'super_admin' || ['general', 'maintenance', 'board'].includes(category) && Boolean(user.isBoardMember)
     || category === 'architectural' && Boolean(user.isAccMember)
 }
 
@@ -560,8 +559,7 @@ async function adminDashboard(request, env) {
       CASE WHEN contact_messages.user_id IS NULL THEN 'Public website' ELSE 'Resident portal' END AS source,
       properties.street_number || ' ' || properties.street_name || ' ' || properties.street_suffix AS address
       FROM contact_messages LEFT JOIN properties ON properties.id = contact_messages.property_id
-      WHERE (?1 = 1 OR contact_messages.category IN ('general', 'maintenance')
-        OR (?2 = 1 AND contact_messages.category = 'board')
+      WHERE (?1 = 1 OR (?2 = 1 AND contact_messages.category IN ('general', 'maintenance', 'board'))
         OR (?3 = 1 AND contact_messages.category = 'architectural'))
       ORDER BY contact_messages.created_at DESC LIMIT 200`).bind(admin.role === 'super_admin' ? 1 : 0,
       admin.isBoardMember ? 1 : 0, admin.isAccMember ? 1 : 0),
