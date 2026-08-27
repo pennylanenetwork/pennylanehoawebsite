@@ -155,6 +155,46 @@ async function sendLoginCode(env, user, code, requestId) {
   }
 }
 
+async function sendTransactionalEmail(env, recipients, subject, htmlContent, tag) {
+  if (!env.BREVO_API_KEY || recipients.length === 0) return
+  const response = await fetch('https://api.brevo.com/v3/smtp/email', {
+    method: 'POST',
+    headers: { 'api-key': env.BREVO_API_KEY, 'content-type': 'application/json' },
+    body: JSON.stringify({
+      sender: { name: 'Penny Lane HOA', email: 'signin@pennylanehoa.net' },
+      to: recipients.map((recipient) => ({ email: recipient.email, name: recipient.name })),
+      subject,
+      htmlContent,
+      tags: [tag],
+    }),
+  })
+  if (!response.ok) {
+    const detail = await response.text()
+    console.error(JSON.stringify({ message: 'Brevo rejected transactional email', status: response.status, detail: detail.slice(0, 500), tag }))
+    throw new Error('Transactional email could not be sent')
+  }
+}
+
+async function notifyReservationAdmins(env, user, reservation) {
+  const admins = await env.DB.prepare(`SELECT email, first_name AS firstName, last_name AS lastName FROM users
+    WHERE status = 'active' AND role IN ('admin', 'super_admin')`).all()
+  const recipients = admins.results.map((admin) => ({ email: admin.email, name: `${admin.firstName} ${admin.lastName}`.trim() }))
+  const residentName = `${user.firstName} ${user.lastName}`.trim()
+  await sendTransactionalEmail(env, recipients, `Clubhouse request from ${residentName}`,
+    `<p>A new clubhouse reservation request is awaiting review.</p><p><strong>${escapeHtml(reservation.eventName)}</strong><br>${escapeHtml(reservation.startsAt)} through ${escapeHtml(reservation.endsAt)}<br>${reservation.attendeeCount} expected attendees</p><p>Submitted by ${escapeHtml(residentName)}. Sign in to the HOA administration dashboard to approve or deny it.</p>`,
+    'reservation-request')
+}
+
+async function notifyReservationDecision(env, reservation, approved) {
+  const subject = approved ? 'Your clubhouse reservation was approved' : 'Your clubhouse reservation was denied'
+  const decision = approved
+    ? '<p>Your request has been approved and added to the members calendar.</p>'
+    : `<p>Your request was denied.</p><p><strong>Reason:</strong> ${escapeHtml(reservation.decisionReason)}</p>`
+  await sendTransactionalEmail(env, [{ email: reservation.email, name: reservation.residentName }], subject,
+    `<p>Hello ${escapeHtml(reservation.firstName)},</p>${decision}<p><strong>${escapeHtml(reservation.eventName)}</strong><br>${escapeHtml(reservation.startsAt)} through ${escapeHtml(reservation.endsAt)}</p><p>You can review your reservation history in the resident portal.</p>`,
+    approved ? 'reservation-approved' : 'reservation-denied')
+}
+
 async function createSessionResponse(request, env, userId, redirectTo = null) {
   const token = randomToken()
   const tokenHash = await sha256(token)
@@ -321,8 +361,9 @@ async function portalDashboard(request, env) {
       audience, event_type AS eventType FROM events WHERE status = 'scheduled' AND ends_at >= CURRENT_TIMESTAMP ORDER BY starts_at LIMIT 50`),
     env.DB.prepare(`SELECT id, title, description, document_url AS url, category, audience
       FROM documents ORDER BY category, title`),
-    env.DB.prepare(`SELECT id, event_name AS eventName, starts_at AS startsAt, ends_at AS endsAt,
-      attendee_count AS attendeeCount, status, deposit_status AS depositStatus
+    env.DB.prepare(`SELECT id, event_name AS eventName, event_type AS eventType, starts_at AS startsAt, ends_at AS endsAt,
+      attendee_count AS attendeeCount, cleaning_method AS cleaningMethod, notes, status,
+      decision_reason AS decisionReason, reviewed_at AS reviewedAt, deposit_status AS depositStatus
       FROM clubhouse_reservations WHERE user_id = ?1 ORDER BY starts_at DESC`).bind(user.id),
   ])
   return json({
@@ -359,9 +400,14 @@ async function adminDashboard(request, env) {
       storage_key AS storageKey, original_name AS originalName, file_size AS fileSize FROM documents ORDER BY category, title`),
     env.DB.prepare(`SELECT clubhouse_reservations.id, clubhouse_reservations.event_name AS eventName,
       clubhouse_reservations.starts_at AS startsAt, clubhouse_reservations.ends_at AS endsAt,
-      clubhouse_reservations.attendee_count AS attendeeCount, clubhouse_reservations.status,
-      users.first_name || ' ' || users.last_name AS residentName
+      clubhouse_reservations.attendee_count AS attendeeCount, clubhouse_reservations.event_type AS eventType,
+      clubhouse_reservations.cleaning_method AS cleaningMethod, clubhouse_reservations.notes,
+      clubhouse_reservations.status, clubhouse_reservations.decision_reason AS decisionReason,
+      clubhouse_reservations.created_at AS requestedAt, clubhouse_reservations.reviewed_at AS reviewedAt,
+      users.first_name || ' ' || users.last_name AS residentName, users.email,
+      properties.street_number || ' ' || properties.street_name || ' ' || properties.street_suffix AS address
       FROM clubhouse_reservations INNER JOIN users ON users.id = clubhouse_reservations.user_id
+      INNER JOIN properties ON properties.id = users.property_id
       ORDER BY clubhouse_reservations.starts_at DESC LIMIT 100`),
   ])
   return json({ properties: properties.results, phases: phases.results, announcements: announcements.results,
@@ -605,23 +651,74 @@ async function createReservation(request, env) {
   const body = await readJson(request)
   if (body.rulesAcknowledged !== true) throw new ResponseError('You must acknowledge the clubhouse rules.', 400)
   const range = validDateRange(body.startsAt, body.endsAt, true)
+  if (new Date(range.startsAt).getTime() > Date.now() + 90 * 24 * 60 * 60 * 1000) throw new ResponseError('Reservations may be requested up to 90 days in advance.', 400)
   const attendeeCount = Number(body.attendeeCount)
-  if (!Number.isInteger(attendeeCount) || attendeeCount < 1 || attendeeCount > 100) throw new ResponseError('Enter an attendee count from 1 to 100.', 400)
-  const conflict = await env.DB.prepare(`SELECT id FROM clubhouse_reservations WHERE status = 'confirmed'
+  if (!Number.isInteger(attendeeCount) || attendeeCount < 1 || attendeeCount > 65) throw new ResponseError('Enter an attendee count from 1 to 65.', 400)
+  const activeCount = await env.DB.prepare(`SELECT COUNT(*) AS count FROM clubhouse_reservations
+    WHERE user_id = ?1 AND status IN ('pending', 'approved') AND ends_at >= CURRENT_TIMESTAMP`).bind(user.id).first('count')
+  if (activeCount >= 2) throw new ResponseError('A household may have no more than two active clubhouse requests.', 409)
+  const conflict = await env.DB.prepare(`SELECT id FROM clubhouse_reservations WHERE status = 'approved'
     AND starts_at < ?2 AND ends_at > ?1 LIMIT 1`).bind(range.startsAt, range.endsAt).first()
   if (conflict) throw new ResponseError('The clubhouse is already reserved during that time.', 409)
   const reservationId = crypto.randomUUID()
-  const eventId = crypto.randomUUID()
   const eventName = cleanText(body.eventName, 140, true)
+  const eventType = cleanText(body.eventType, 100, true)
+  const cleaningMethod = ['self', 'professional'].includes(body.cleaningMethod) ? body.cleaningMethod : null
+  if (!cleaningMethod) throw new ResponseError('Select how the clubhouse will be cleaned.', 400)
   const notes = cleanText(body.notes, 1500)
-  await env.DB.batch([
-    env.DB.prepare(`INSERT INTO events (id, title, description, starts_at, ends_at, audience, event_type, created_by)
-      VALUES (?1, ?2, ?3, ?4, ?5, 'members', 'clubhouse', ?6)`).bind(eventId, `Clubhouse reserved: ${eventName}`, 'Clubhouse reservation', range.startsAt, range.endsAt, user.id),
-    env.DB.prepare(`INSERT INTO clubhouse_reservations (id, user_id, event_id, event_name, starts_at, ends_at,
-      attendee_count, notes, rules_acknowledged_at) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, CURRENT_TIMESTAMP)`)
-      .bind(reservationId, user.id, eventId, eventName, range.startsAt, range.endsAt, attendeeCount, notes),
-  ])
-  return json({ id: reservationId, status: 'confirmed' }, { status: 201 })
+  await env.DB.prepare(`INSERT INTO clubhouse_reservations (id, user_id, event_name, event_type, starts_at, ends_at,
+    attendee_count, cleaning_method, notes, rules_acknowledged_at, status)
+    VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, CURRENT_TIMESTAMP, 'pending')`)
+    .bind(reservationId, user.id, eventName, eventType, range.startsAt, range.endsAt, attendeeCount, cleaningMethod, notes).run()
+  try {
+    await notifyReservationAdmins(env, user, { eventName, startsAt: range.startsAt, endsAt: range.endsAt, attendeeCount })
+  } catch (error) {
+    console.error(JSON.stringify({ message: 'Reservation administrator notification failed', reservationId, detail: String(error) }))
+  }
+  return json({ id: reservationId, status: 'pending' }, { status: 201 })
+}
+
+async function decideReservation(request, env, reservationId) {
+  const admin = await requireAdmin(request, env)
+  const body = await readJson(request)
+  const decision = body.decision
+  if (!['approve', 'deny'].includes(decision)) throw new ResponseError('Select approve or deny.', 400)
+  const reservation = await env.DB.prepare(`SELECT clubhouse_reservations.*, users.email,
+    users.first_name AS firstName, users.first_name || ' ' || users.last_name AS residentName
+    FROM clubhouse_reservations INNER JOIN users ON users.id = clubhouse_reservations.user_id
+    WHERE clubhouse_reservations.id = ?1`).bind(reservationId).first()
+  if (!reservation) throw new ResponseError('Reservation not found.', 404)
+  if (reservation.status !== 'pending') throw new ResponseError('Only pending requests can be reviewed.', 409)
+  const reason = cleanText(body.reason, 1000)
+  if (decision === 'deny' && !reason) throw new ResponseError('Enter a reason for denying the request.', 400)
+  if (decision === 'approve') {
+    const conflict = await env.DB.prepare(`SELECT id FROM clubhouse_reservations WHERE status = 'approved'
+      AND starts_at < ?2 AND ends_at > ?1 LIMIT 1`).bind(reservation.starts_at, reservation.ends_at).first()
+    if (conflict) throw new ResponseError('The clubhouse is already reserved during that time.', 409)
+    const eventId = crypto.randomUUID()
+    await env.DB.batch([
+      env.DB.prepare(`INSERT INTO events (id, title, description, starts_at, ends_at, audience, event_type, created_by)
+        VALUES (?1, ?2, ?3, ?4, ?5, 'members', 'clubhouse', ?6)`).bind(eventId,
+        `Clubhouse reserved: ${reservation.event_name}`, reservation.event_type, reservation.starts_at, reservation.ends_at, reservation.user_id),
+      env.DB.prepare(`UPDATE clubhouse_reservations SET event_id = ?1, status = 'approved', decision_reason = NULL,
+        reviewed_by = ?2, reviewed_at = CURRENT_TIMESTAMP, updated_at = CURRENT_TIMESTAMP WHERE id = ?3`).bind(eventId, admin.id, reservationId),
+    ])
+    reservation.decisionReason = null
+  } else {
+    await env.DB.prepare(`UPDATE clubhouse_reservations SET status = 'denied', decision_reason = ?1,
+      reviewed_by = ?2, reviewed_at = CURRENT_TIMESTAMP, updated_at = CURRENT_TIMESTAMP WHERE id = ?3`)
+      .bind(reason, admin.id, reservationId).run()
+    reservation.decisionReason = reason
+  }
+  reservation.eventName = reservation.event_name
+  reservation.startsAt = reservation.starts_at
+  reservation.endsAt = reservation.ends_at
+  try {
+    await notifyReservationDecision(env, reservation, decision === 'approve')
+  } catch (error) {
+    console.error(JSON.stringify({ message: 'Reservation decision notification failed', reservationId, detail: String(error) }))
+  }
+  return json({ status: decision === 'approve' ? 'approved' : 'denied' })
 }
 
 async function cancelReservation(request, env, reservationId) {
@@ -630,10 +727,10 @@ async function cancelReservation(request, env, reservationId) {
   if (!reservation) throw new ResponseError('Reservation not found.', 404)
   if (reservation.userId !== user.id && !['admin', 'super_admin'].includes(user.role)) throw new ResponseError('Not permitted.', 403)
   if (reservation.status === 'cancelled') return json({ status: 'cancelled' })
-  await env.DB.batch([
-    env.DB.prepare("UPDATE clubhouse_reservations SET status = 'cancelled', updated_at = CURRENT_TIMESTAMP WHERE id = ?1").bind(reservationId),
-    env.DB.prepare("UPDATE events SET status = 'cancelled', updated_at = CURRENT_TIMESTAMP WHERE id = ?1").bind(reservation.eventId),
-  ])
+  if (!['pending', 'approved'].includes(reservation.status)) throw new ResponseError('This reservation can no longer be cancelled.', 409)
+  const statements = [env.DB.prepare("UPDATE clubhouse_reservations SET status = 'cancelled', updated_at = CURRENT_TIMESTAMP WHERE id = ?1").bind(reservationId)]
+  if (reservation.eventId) statements.push(env.DB.prepare("UPDATE events SET status = 'cancelled', updated_at = CURRENT_TIMESTAMP WHERE id = ?1").bind(reservation.eventId))
+  await env.DB.batch(statements)
   return json({ status: 'cancelled' })
 }
 
@@ -823,6 +920,7 @@ async function handleApi(request, env) {
   const documentUploadMatch = url.pathname.match(/^\/api\/admin\/documents\/([^/]+)\/upload$/)
   if (documentUploadMatch && request.method === 'PUT') return replaceDocument(request, env, documentUploadMatch[1])
   const adminReservationMatch = url.pathname.match(/^\/api\/admin\/reservations\/([^/]+)$/)
+  if (adminReservationMatch && request.method === 'PATCH') return decideReservation(request, env, adminReservationMatch[1])
   if (adminReservationMatch && request.method === 'DELETE') return cancelReservation(request, env, adminReservationMatch[1])
   const statusMatch = url.pathname.match(/^\/api\/admin\/users\/([^/]+)\/status$/)
   if (request.method === 'PATCH' && statusMatch) return updateUserStatus(request, env, statusMatch[1])

@@ -141,6 +141,16 @@ export default function Admin() {
     } catch (requestError) { setError(requestError.message) }
   }
 
+  async function decideReservation(id, decision, reason = '') {
+    setError('')
+    setNotice('')
+    try {
+      await api(`/api/admin/reservations/${id}`, { method: 'PATCH', body: JSON.stringify({ decision, reason }) })
+      setNotice(decision === 'approve' ? 'Reservation approved and added to the members calendar.' : 'Reservation denied and the resident was notified.')
+      await load()
+    } catch (requestError) { setError(requestError.message) }
+  }
+
   const tabs = ['accounts', 'properties', 'announcements', 'events', 'documents', 'reservations']
 
   return <div className="portal-shell admin-shell">
@@ -197,7 +207,7 @@ export default function Admin() {
         <FormActions editing={editing?.kind === 'document'} label={documentMode === 'upload' ? 'Upload document' : 'Add document'} onCancel={() => stopEditing('document')} />
       </form>} rows={data.documents.map((item) => <DataRow key={item.id} title={item.title} detail={`${item.category}${item.originalName ? ` | ${item.originalName}` : ''}`} meta={item.audience} actions={<RowActions onEdit={() => beginEdit('document', item)} onDelete={() => remove('documents', item.id, 'Delete this document?')} />} />)} />}
 
-      {tab === 'reservations' && <div className="data-list">{data.reservations.map((item) => <DataRow key={item.id} title={item.eventName} detail={`${item.residentName} | ${dateTime(item.startsAt)}`} meta={item.status} actions={item.status === 'confirmed' && <button type="button" className="row-delete" onClick={() => remove('reservations', item.id, 'Cancel this clubhouse reservation?')}>Cancel</button>} />)}{data.reservations.length === 0 && <p className="empty-state">No clubhouse reservations yet.</p>}</div>}
+      {tab === 'reservations' && <div className="reservation-admin-list">{data.reservations.map((item) => <ReservationReview key={item.id} item={item} onDecide={decideReservation} onCancel={() => remove('reservations', item.id, 'Cancel this clubhouse reservation?')} />)}{data.reservations.length === 0 && <p className="empty-state">No clubhouse reservation requests yet.</p>}</div>}
     </main>
   </div>
 }
@@ -220,4 +230,9 @@ function RowActions({ onEdit, onDelete, deleteLabel = 'Delete' }) {
 
 function DataRow({ title, detail, meta, actions }) {
   return <div className="data-row"><div><strong>{title}</strong><small>{detail}</small></div><span>{meta}</span>{actions}</div>
+}
+
+function ReservationReview({ item, onDecide, onCancel }) {
+  const [reason, setReason] = useState('')
+  return <article className={`reservation-review ${item.status === 'pending' ? 'is-pending' : ''}`}><header><div><strong>{item.eventName}</strong><small>{item.residentName} | {item.address}</small></div><span className={`status status-${item.status}`}>{item.status}</span></header><dl><div><dt>Schedule</dt><dd>{dateTime(item.startsAt)} to {dateTime(item.endsAt)}</dd></div><div><dt>Event</dt><dd>{item.eventType}</dd></div><div><dt>Attendance</dt><dd>{item.attendeeCount}</dd></div><div><dt>Cleaning</dt><dd>{item.cleaningMethod === 'professional' ? 'Professional cleaner' : 'Resident will clean'}</dd></div></dl>{item.notes && <p><strong>Notes:</strong> {item.notes}</p>}{item.decisionReason && <p className="decision-reason"><strong>Decision reason:</strong> {item.decisionReason}</p>}{item.status === 'pending' && <div className="decision-controls"><button type="button" className="primary-button" onClick={() => onDecide(item.id, 'approve')}>Approve</button><label>Reason required to deny<textarea maxLength="1000" value={reason} onChange={(event) => setReason(event.target.value)} /></label><button type="button" className="row-delete" disabled={!reason.trim()} onClick={() => onDecide(item.id, 'deny', reason)}>Deny request</button></div>}{item.status === 'approved' && <button type="button" className="row-delete" onClick={onCancel}>Cancel reservation</button>}</article>
 }
