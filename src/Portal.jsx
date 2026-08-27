@@ -116,6 +116,7 @@ function ResidentHome({ user, onLogout }) {
     household: [],
     poolCards: [],
     poolAgreements: [],
+    boardMembers: [],
   })
   const emptyReservation = {
     eventName: '',
@@ -384,6 +385,16 @@ function ResidentHome({ user, onLogout }) {
                 </div>
               ))}
               {data.events.length === 0 && <p className="empty-state">No upcoming events.</p>}
+            </section>
+            <section className="board-directory">
+              <h2>Your HOA Board</h2>
+              {data.boardMembers.map((member) => (
+                <div className="board-member-row" key={member.id}>
+                  <strong>{member.firstName} {member.lastName}</strong>
+                  <span>{member.boardRole}</span>
+                </div>
+              ))}
+              {data.boardMembers.length === 0 && <p className="empty-state">The active board roster has not been published.</p>}
             </section>
           </div>
         )}

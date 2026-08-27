@@ -1246,6 +1246,9 @@ function AccountReview({ account, currentUser, properties, onStatus, onSave }) {
     isAccMember: Boolean(account.isAccMember),
     isTreasurer: Boolean(account.isTreasurer),
     isAmenitiesCoordinator: Boolean(account.isAmenitiesCoordinator),
+    isPresident: Boolean(account.isPresident),
+    isVicePresident: Boolean(account.isVicePresident),
+    isSecretary: Boolean(account.isSecretary),
   })
   const update = (field, value) => setForm({ ...form, [field]: value })
   return (
@@ -1266,6 +1269,9 @@ function AccountReview({ account, currentUser, properties, onStatus, onSave }) {
           {account.isBoardMember && <span className="committee-role">Board member</span>}
           {account.isAccMember && <span className="committee-role">ACC Committee</span>}
           {account.isTreasurer && <span className="committee-role">Treasurer</span>}
+          {account.isPresident && <span className="committee-role">President</span>}
+          {account.isVicePresident && <span className="committee-role">Vice President</span>}
+          {account.isSecretary && <span className="committee-role">Secretary</span>}
           {account.isAmenitiesCoordinator && <span className="committee-role">Amenities Coordinator</span>}
         </div>
       </header>
@@ -1337,6 +1343,18 @@ function AccountReview({ account, currentUser, properties, onStatus, onSave }) {
               <label className="rules-check">
                 <input type="checkbox" checked={form.isTreasurer} onChange={(event) => update('isTreasurer', event.target.checked)} />
                 <span>Treasurer</span>
+              </label>
+              <label className="rules-check">
+                <input type="checkbox" checked={form.isPresident} onChange={(event) => update('isPresident', event.target.checked)} />
+                <span>President</span>
+              </label>
+              <label className="rules-check">
+                <input type="checkbox" checked={form.isVicePresident} onChange={(event) => update('isVicePresident', event.target.checked)} />
+                <span>Vice President</span>
+              </label>
+              <label className="rules-check">
+                <input type="checkbox" checked={form.isSecretary} onChange={(event) => update('isSecretary', event.target.checked)} />
+                <span>Secretary</span>
               </label>
               <label className="rules-check">
                 <input type="checkbox" checked={form.isAmenitiesCoordinator} onChange={(event) => update('isAmenitiesCoordinator', event.target.checked)} />

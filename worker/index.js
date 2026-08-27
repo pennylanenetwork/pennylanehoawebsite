@@ -380,6 +380,7 @@ async function currentUser(request, env) {
       users.last_name AS lastName, users.phone, users.role, users.status, users.resident_type AS residentType,
       users.is_board_member AS isBoardMember, users.is_acc_member AS isAccMember,
       users.is_treasurer AS isTreasurer, users.is_amenities_coordinator AS isAmenitiesCoordinator,
+      users.is_president AS isPresident, users.is_vice_president AS isVicePresident, users.is_secretary AS isSecretary,
       users.notify_announcements AS notifyAnnouncements, users.notify_events AS notifyEvents,
       users.property_id AS propertyId,
       properties.street_number || ' ' || properties.street_name || ' ' || properties.street_suffix AS address
@@ -477,7 +478,7 @@ async function clubhouseAvailability(env, startsAt, endsAt, excludeReservationId
 
 async function portalDashboard(request, env) {
   const user = await requireUser(request, env)
-  const [announcements, events, documents, reservations, messages, messageReplies, guests, household, poolCards, poolAgreements] = await env.DB.batch([
+  const [announcements, events, documents, reservations, messages, messageReplies, guests, household, poolCards, poolAgreements, boardMembers] = await env.DB.batch([
     env.DB.prepare(`SELECT id, title, body, audience, published_at AS publishedAt FROM announcements
       WHERE published_at <= CURRENT_TIMESTAMP ORDER BY published_at DESC LIMIT 20`),
     env.DB.prepare(`SELECT id, title, description, starts_at AS startsAt, ends_at AS endsAt,
@@ -514,6 +515,15 @@ async function portalDashboard(request, env) {
       users.first_name || ' ' || users.last_name AS signedByName
       FROM pool_rules_agreements INNER JOIN users ON users.id = pool_rules_agreements.user_id
       WHERE pool_rules_agreements.property_id = ?1 ORDER BY pool_rules_agreements.acknowledged_at DESC`).bind(user.propertyId),
+    env.DB.prepare(`SELECT id, first_name AS firstName, last_name AS lastName,
+      CASE WHEN is_president = 1 THEN 'President'
+        WHEN is_vice_president = 1 THEN 'Vice President'
+        WHEN is_secretary = 1 THEN 'Secretary'
+        WHEN is_treasurer = 1 THEN 'Treasurer'
+        ELSE 'Board Member' END AS boardRole
+      FROM users WHERE status = 'active' AND is_board_member = 1
+      ORDER BY CASE WHEN is_president = 1 THEN 1 WHEN is_vice_president = 1 THEN 2
+        WHEN is_secretary = 1 THEN 3 WHEN is_treasurer = 1 THEN 4 ELSE 5 END, last_name, first_name`),
   ])
   const repliesByMessage = messageReplies.results.reduce((result, reply) => {
     if (!result[reply.messageId]) result[reply.messageId] = []
@@ -530,6 +540,7 @@ async function portalDashboard(request, env) {
     household: user.residentType === 'owner' ? household.results : [],
     poolCards: poolCards.results,
     poolAgreements: poolAgreements.results,
+    boardMembers: boardMembers.results,
   })
 }
 
@@ -1655,6 +1666,7 @@ async function listUsers(request, env) {
       users.role, users.status, users.resident_type AS residentType, users.property_id AS propertyId,
       users.is_board_member AS isBoardMember, users.is_acc_member AS isAccMember,
       users.is_treasurer AS isTreasurer, users.is_amenities_coordinator AS isAmenitiesCoordinator,
+      users.is_president AS isPresident, users.is_vice_president AS isVicePresident, users.is_secretary AS isSecretary,
       users.notify_announcements AS notifyAnnouncements, users.notify_events AS notifyEvents, users.created_at AS createdAt,
       properties.street_number || ' ' || properties.street_name || ' ' || properties.street_suffix AS address
     FROM users INNER JOIN properties ON properties.id = users.property_id
@@ -1704,19 +1716,28 @@ async function updateUserProfile(request, env, targetId) {
   const body = await readJson(request)
   const target = await env.DB.prepare(`SELECT id, role, is_board_member AS isBoardMember,
     is_acc_member AS isAccMember, is_treasurer AS isTreasurer,
-    is_amenities_coordinator AS isAmenitiesCoordinator FROM users WHERE id = ?1`).bind(targetId).first()
+    is_amenities_coordinator AS isAmenitiesCoordinator, is_president AS isPresident,
+    is_vice_president AS isVicePresident, is_secretary AS isSecretary FROM users WHERE id = ?1`).bind(targetId).first()
   if (!target) throw new ResponseError('Account not found.', 404)
   if (target.role === 'super_admin' && admin.role !== 'super_admin') throw new ResponseError('Super administrator access required.', 403)
   const email = cleanText(body.email, 254, true).toLowerCase()
   if (!/^\S+@\S+\.\S+$/.test(email)) throw new ResponseError('Enter a valid email address.', 400)
   const role = ['resident', 'admin', 'super_admin'].includes(body.role) ? body.role : 'resident'
   if (role !== target.role && admin.role !== 'super_admin') throw new ResponseError('Super administrator access required to change account roles.', 403)
-  const isBoardMember = body.isBoardMember === true
-  const isAccMember = body.isAccMember === true
+  const isPresident = body.isPresident === true
+  const isVicePresident = body.isVicePresident === true
+  const isSecretary = body.isSecretary === true
   const isTreasurer = body.isTreasurer === true
+  if ([isPresident, isVicePresident, isSecretary, isTreasurer].filter(Boolean).length > 1) {
+    throw new ResponseError('Select only one board officer role for an account.', 400)
+  }
+  const isBoardMember = body.isBoardMember === true || isPresident || isVicePresident || isSecretary || isTreasurer
+  const isAccMember = body.isAccMember === true
   const isAmenitiesCoordinator = body.isAmenitiesCoordinator === true
   if ((isBoardMember !== Boolean(target.isBoardMember) || isAccMember !== Boolean(target.isAccMember)
-    || isTreasurer !== Boolean(target.isTreasurer) || isAmenitiesCoordinator !== Boolean(target.isAmenitiesCoordinator))
+    || isTreasurer !== Boolean(target.isTreasurer) || isAmenitiesCoordinator !== Boolean(target.isAmenitiesCoordinator)
+    || isPresident !== Boolean(target.isPresident) || isVicePresident !== Boolean(target.isVicePresident)
+    || isSecretary !== Boolean(target.isSecretary))
     && admin.role !== 'super_admin') throw new ResponseError('Super administrator access required to change committee memberships.', 403)
   if (targetId === admin.id && role !== admin.role) throw new ResponseError('You cannot change your own role.', 400)
   const residentType = ['owner', 'tenant', 'household_member'].includes(body.residentType) ? body.residentType : 'owner'
@@ -1728,13 +1749,16 @@ async function updateUserProfile(request, env, targetId) {
     await env.DB.batch([
       env.DB.prepare(`UPDATE users SET first_name = ?1, last_name = ?2, email = ?3, phone = ?4,
         property_id = ?5, resident_type = ?6, role = ?7, is_board_member = ?8, is_acc_member = ?9,
-        is_treasurer = ?10, is_amenities_coordinator = ?11, updated_at = CURRENT_TIMESTAMP WHERE id = ?12`)
+        is_treasurer = ?10, is_amenities_coordinator = ?11, is_president = ?12,
+        is_vice_president = ?13, is_secretary = ?14, updated_at = CURRENT_TIMESTAMP WHERE id = ?15`)
         .bind(cleanText(body.firstName, 80, true), cleanText(body.lastName, 80, true), email,
           cleanText(body.phone, 30), propertyId, residentType, role, isBoardMember ? 1 : 0, isAccMember ? 1 : 0,
-          isTreasurer ? 1 : 0, isAmenitiesCoordinator ? 1 : 0, targetId),
+          isTreasurer ? 1 : 0, isAmenitiesCoordinator ? 1 : 0, isPresident ? 1 : 0,
+          isVicePresident ? 1 : 0, isSecretary ? 1 : 0, targetId),
       env.DB.prepare(`INSERT INTO audit_log (actor_user_id, action, target_type, target_id, details_json)
         VALUES (?1, 'account.profile_changed', 'user', ?2, ?3)`).bind(admin.id, targetId,
-        JSON.stringify({ email, propertyId, residentType, role, isBoardMember, isAccMember, isTreasurer, isAmenitiesCoordinator })),
+        JSON.stringify({ email, propertyId, residentType, role, isBoardMember, isAccMember, isTreasurer,
+          isAmenitiesCoordinator, isPresident, isVicePresident, isSecretary })),
     ])
   } catch (error) {
     if (String(error).includes('UNIQUE')) throw new ResponseError('That email address is already registered.', 409)
