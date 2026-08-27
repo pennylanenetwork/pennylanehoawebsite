@@ -155,14 +155,14 @@ async function sendLoginCode(env, user, code, requestId) {
   }
 }
 
-async function sendTransactionalEmail(env, recipients, subject, htmlContent, tag) {
+async function sendTransactionalEmail(env, recipients, subject, htmlContent, tag, replyTo = null) {
   if (!env.BREVO_API_KEY || recipients.length === 0) return
   const response = await fetch('https://api.brevo.com/v3/smtp/email', {
     method: 'POST',
     headers: { 'api-key': env.BREVO_API_KEY, 'content-type': 'application/json' },
     body: JSON.stringify({
       sender: { name: 'Penny Lane HOA', email: 'notifications@pennylanehoa.net' },
-      replyTo: { name: 'Penny Lane HOA Board', email: 'board@pennylanehoa.net' },
+      replyTo: replyTo || { name: 'Penny Lane HOA Board', email: 'board@pennylanehoa.net' },
       to: recipients.map((recipient) => ({ email: recipient.email, name: recipient.name })),
       subject,
       htmlContent,
@@ -389,7 +389,7 @@ async function publicContent(env) {
 
 async function adminDashboard(request, env) {
   await requireAdmin(request, env)
-  const [properties, phases, announcements, events, documents, reservations] = await env.DB.batch([
+  const [properties, phases, announcements, events, documents, reservations, messages] = await env.DB.batch([
     env.DB.prepare(`SELECT properties.id, properties.street_number || ' ' || properties.street_name || ' ' || properties.street_suffix AS address,
       properties.status, hoa_phases.name AS phase FROM properties INNER JOIN hoa_phases ON hoa_phases.id = properties.phase_id
       ORDER BY properties.street_name, properties.street_number`),
@@ -410,9 +410,76 @@ async function adminDashboard(request, env) {
       FROM clubhouse_reservations INNER JOIN users ON users.id = clubhouse_reservations.user_id
       INNER JOIN properties ON properties.id = users.property_id
       ORDER BY clubhouse_reservations.starts_at DESC LIMIT 100`),
+    env.DB.prepare(`SELECT id, name, email, phone, category, message, status, admin_notes AS adminNotes,
+      created_at AS createdAt FROM contact_messages ORDER BY created_at DESC LIMIT 200`),
   ])
   return json({ properties: properties.results, phases: phases.results, announcements: announcements.results,
-    events: events.results, documents: documents.results, reservations: reservations.results })
+    events: events.results, documents: documents.results, reservations: reservations.results, messages: messages.results })
+}
+
+function icsText(value) {
+  return String(value || '').replace(/\\/g, '\\\\').replace(/\r?\n/g, '\\n').replace(/,/g, '\\,').replace(/;/g, '\\;')
+}
+
+function icsDate(value) {
+  return new Date(value).toISOString().replace(/[-:]/g, '').replace(/\.\d{3}Z$/, 'Z')
+}
+
+async function downloadEventCalendar(request, env, id) {
+  const event = await env.DB.prepare(`SELECT id, title, description, starts_at AS startsAt, ends_at AS endsAt,
+    audience, status FROM events WHERE id = ?1`).bind(id).first()
+  if (!event || event.status !== 'scheduled') throw new ResponseError('Event not found.', 404)
+  if (event.audience !== 'public') await requireUser(request, env)
+  const body = ['BEGIN:VCALENDAR', 'VERSION:2.0', 'PRODID:-//Penny Lane HOA//Events//EN', 'CALSCALE:GREGORIAN',
+    'BEGIN:VEVENT', `UID:${event.id}@pennylanehoa.net`, `DTSTAMP:${icsDate(new Date())}`,
+    `DTSTART:${icsDate(event.startsAt)}`, `DTEND:${icsDate(event.endsAt)}`, `SUMMARY:${icsText(event.title)}`,
+    `DESCRIPTION:${icsText(event.description)}`, 'END:VEVENT', 'END:VCALENDAR', ''].join('\r\n')
+  return new Response(body, { headers: {
+    'cache-control': event.audience === 'public' ? 'public, max-age=300' : 'private, no-store',
+    'content-disposition': `attachment; filename="penny-lane-event-${event.id}.ics"`,
+    'content-type': 'text/calendar; charset=utf-8',
+    'x-content-type-options': 'nosniff',
+  } })
+}
+
+async function createContactMessage(request, env) {
+  const body = await readJson(request)
+  await verifyTurnstile(body, env)
+  const name = cleanText(body.name, 160, true)
+  const email = cleanText(body.email, 254, true).toLowerCase()
+  if (!/^\S+@\S+\.\S+$/.test(email)) throw new ResponseError('Enter a valid email address.', 400)
+  const phone = cleanText(body.phone, 30)
+  const category = ['general', 'maintenance', 'architectural', 'board'].includes(body.category) ? body.category : 'general'
+  const message = cleanText(body.message, 5000, true)
+  const recent = await env.DB.prepare(`SELECT id FROM contact_messages WHERE email = ?1
+    AND created_at >= datetime('now', '-1 minute') LIMIT 1`).bind(email).first()
+  if (recent) throw new ResponseError('Please wait before sending another message.', 429)
+  const id = crypto.randomUUID()
+  const ip = request.headers.get('cf-connecting-ip') || ''
+  const ipHash = ip ? await sha256(ip) : null
+  await env.DB.prepare(`INSERT INTO contact_messages (id, name, email, phone, category, message, submitted_ip_hash)
+    VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)`).bind(id, name, email, phone, category, message, ipHash).run()
+  try {
+    await sendTransactionalEmail(env, [{ email: 'board@pennylanehoa.net', name: 'Penny Lane HOA Board' }],
+      `Website contact: ${category} - ${name}`,
+      `<p>A new website message was submitted.</p><p><strong>From:</strong> ${escapeHtml(name)} (${escapeHtml(email)})${phone ? `<br><strong>Phone:</strong> ${escapeHtml(phone)}` : ''}<br><strong>Category:</strong> ${escapeHtml(category)}</p><p>${escapeHtml(message).replace(/\n/g, '<br>')}</p><p>The message is also stored in the administration dashboard.</p>`,
+      'website-contact', { name, email })
+  } catch (error) {
+    console.error(JSON.stringify({ message: 'Contact notification failed', contactId: id, detail: String(error) }))
+  }
+  return json({ id, status: 'received' }, { status: 201 })
+}
+
+async function updateContactMessage(request, env, id) {
+  await requireAdmin(request, env)
+  const body = await readJson(request)
+  const status = ['new', 'read', 'closed'].includes(body.status) ? body.status : null
+  if (!status) throw new ResponseError('Select a valid message status.', 400)
+  const notes = cleanText(body.adminNotes, 3000)
+  const result = await env.DB.prepare(`UPDATE contact_messages SET status = ?1, admin_notes = ?2,
+    updated_at = CURRENT_TIMESTAMP WHERE id = ?3`).bind(status, notes, id).run()
+  if (!result.meta.changes) throw new ResponseError('Message not found.', 404)
+  return json({ status })
 }
 
 async function createProperty(request, env) {
@@ -887,6 +954,9 @@ async function handleApi(request, env) {
     return json({ status: 'ok', activeProperties: propertyCount })
   }
   if (request.method === 'GET' && url.pathname === '/api/public/content') return publicContent(env)
+  const calendarDownloadMatch = url.pathname.match(/^\/api\/events\/([^/]+)\.ics$/)
+  if (calendarDownloadMatch && request.method === 'GET') return downloadEventCalendar(request, env, calendarDownloadMatch[1])
+  if (request.method === 'POST' && url.pathname === '/api/contact') return createContactMessage(request, env)
   const downloadMatch = url.pathname.match(/^\/api\/documents\/([^/]+)\/download$/)
   if (downloadMatch && request.method === 'GET') return downloadDocument(request, env, downloadMatch[1])
   if (request.method === 'GET' && url.pathname === '/api/auth/session') return json({ user: await currentUser(request, env) })
@@ -923,6 +993,8 @@ async function handleApi(request, env) {
   const adminReservationMatch = url.pathname.match(/^\/api\/admin\/reservations\/([^/]+)$/)
   if (adminReservationMatch && request.method === 'PATCH') return decideReservation(request, env, adminReservationMatch[1])
   if (adminReservationMatch && request.method === 'DELETE') return cancelReservation(request, env, adminReservationMatch[1])
+  const contactMessageMatch = url.pathname.match(/^\/api\/admin\/messages\/([^/]+)$/)
+  if (contactMessageMatch && request.method === 'PATCH') return updateContactMessage(request, env, contactMessageMatch[1])
   const statusMatch = url.pathname.match(/^\/api\/admin\/users\/([^/]+)\/status$/)
   if (request.method === 'PATCH' && statusMatch) return updateUserStatus(request, env, statusMatch[1])
   return json({ error: 'Not found' }, { status: 404 })
