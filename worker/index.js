@@ -161,7 +161,8 @@ async function sendTransactionalEmail(env, recipients, subject, htmlContent, tag
     method: 'POST',
     headers: { 'api-key': env.BREVO_API_KEY, 'content-type': 'application/json' },
     body: JSON.stringify({
-      sender: { name: 'Penny Lane HOA', email: 'signin@pennylanehoa.net' },
+      sender: { name: 'Penny Lane HOA', email: 'notifications@pennylanehoa.net' },
+      replyTo: { name: 'Penny Lane HOA Board', email: 'board@pennylanehoa.net' },
       to: recipients.map((recipient) => ({ email: recipient.email, name: recipient.name })),
       subject,
       htmlContent,
