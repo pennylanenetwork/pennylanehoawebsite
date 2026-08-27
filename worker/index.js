@@ -1553,7 +1553,7 @@ async function register(request, env) {
   ]
   if (residentType === 'owner') {
     statements.push(env.DB.prepare(`INSERT INTO pool_rules_agreements
-      (id, property_id, user_id, rules_version, acknowledgement_text) VALUES (?1, ?2, ?3, '2026-08', ?4)`)
+      (id, property_id, user_id, rules_version, acknowledgement_text) VALUES (?1, ?2, ?3, '2026-08-27', ?4)`)
       .bind(crypto.randomUUID(), property.id, id, 'I have read and agree to the Penny Lane Estates pool rules and access-card guidelines. I accept responsibility for my household and guests, understand that violations may result in suspended pool privileges, and accept the $20 fee for a lost or replacement access card.'))
   }
   await env.DB.batch(statements)
