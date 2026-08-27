@@ -4,6 +4,7 @@ import './Portal.css'
 
 const emptyForms = {
   property: { address: '', phaseName: 'New Development' },
+  publicUpdate: { title: '', body: '', audience: 'public', notifyResidents: false },
   announcement: { title: '', body: '', audience: 'members', notifyResidents: true },
   event: { title: '', description: '', startsAt: '', endsAt: '', audience: 'members', eventType: 'community', notifyResidents: true },
   document: { title: '', description: '', url: '', category: 'General', audience: 'members' },
@@ -238,7 +239,7 @@ export default function Admin() {
     } catch (requestError) { setError(requestError.message) }
   }
 
-  const tabs = ['overview', 'accounts', 'properties', 'access', 'announcements', 'events', 'documents', 'photos', 'reservations', 'messages']
+  const tabs = ['overview', 'accounts', 'properties', 'access', 'in the know', 'announcements', 'events', 'documents', 'photos', 'reservations', 'messages']
 
   return <div className="portal-shell admin-shell">
     <header className="portal-header">
@@ -266,13 +267,21 @@ export default function Admin() {
 
       {tab === 'access' && <AccessWorkspace guests={data.guests} poolCards={data.poolCards} />}
 
+      {tab === 'in the know' && <Workspace title={editing?.kind === 'publicUpdate' ? 'Edit public update' : 'Add public update'} form={<form onSubmit={(event) => submit('publicUpdate', 'announcements', event)}>
+        <p className="form-context">Public updates appear in the homepage In the Know section alongside public calendar events.</p>
+        <label>Title<input required maxLength="140" value={forms.publicUpdate.title} onChange={(event) => updateForm('publicUpdate', 'title', event.target.value)} /></label>
+        <label>Message<textarea required maxLength="5000" value={forms.publicUpdate.body} onChange={(event) => updateForm('publicUpdate', 'body', event.target.value)} /></label>
+        {editing?.kind !== 'publicUpdate' && <label className="rules-check"><input type="checkbox" checked={forms.publicUpdate.notifyResidents} onChange={(event) => updateForm('publicUpdate', 'notifyResidents', event.target.checked)} /><span>Email residents who subscribe to announcements.</span></label>}
+        <FormActions editing={editing?.kind === 'publicUpdate'} label="Publish update" onCancel={() => stopEditing('publicUpdate')} />
+      </form>} rows={data.announcements.filter((item) => item.audience === 'public').map((item) => <DataRow key={item.id} title={item.title} detail={dateTime(item.publishedAt)} meta="homepage" actions={<RowActions onEdit={() => beginEdit('publicUpdate', item)} onDelete={() => remove('announcements', item.id, 'Delete this public update?')} />} />)} />}
+
       {tab === 'announcements' && <Workspace title={editing?.kind === 'announcement' ? 'Edit announcement' : 'Post announcement'} form={<form onSubmit={(event) => submit('announcement', 'announcements', event)}>
         <label>Title<input required value={forms.announcement.title} onChange={(event) => updateForm('announcement', 'title', event.target.value)} /></label>
         <label>Message<textarea required value={forms.announcement.body} onChange={(event) => updateForm('announcement', 'body', event.target.value)} /></label>
         <Audience value={forms.announcement.audience} onChange={(value) => updateForm('announcement', 'audience', value)} />
         {editing?.kind !== 'announcement' && <label className="rules-check"><input type="checkbox" checked={forms.announcement.notifyResidents} onChange={(event) => updateForm('announcement', 'notifyResidents', event.target.checked)} /><span>Email residents who subscribe to announcements.</span></label>}
         <FormActions editing={editing?.kind === 'announcement'} label="Publish" onCancel={() => stopEditing('announcement')} />
-      </form>} rows={data.announcements.map((item) => <DataRow key={item.id} title={item.title} detail={dateTime(item.publishedAt)} meta={item.audience} actions={<RowActions onEdit={() => beginEdit('announcement', item)} onDelete={() => remove('announcements', item.id, 'Delete this announcement?')} />} />)} />}
+      </form>} rows={data.announcements.filter((item) => item.audience === 'members').map((item) => <DataRow key={item.id} title={item.title} detail={dateTime(item.publishedAt)} meta={item.audience} actions={<RowActions onEdit={() => beginEdit('announcement', item)} onDelete={() => remove('announcements', item.id, 'Delete this announcement?')} />} />)} />}
 
       {tab === 'events' && <Workspace title={editing?.kind === 'event' ? 'Edit calendar event' : 'Add calendar event'} form={<form onSubmit={(event) => submit('event', 'events', event)}>
         <label>Title<input required value={forms.event.title} onChange={(event) => updateForm('event', 'title', event.target.value)} /></label>
