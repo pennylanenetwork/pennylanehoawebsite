@@ -406,7 +406,7 @@ function validDateRange(startsAtValue, endsAtValue, requireFuture = false) {
 
 async function portalDashboard(request, env) {
   const user = await requireUser(request, env)
-  const [announcements, events, documents, reservations, messages] = await env.DB.batch([
+  const [announcements, events, documents, reservations, messages, guests] = await env.DB.batch([
     env.DB.prepare(`SELECT id, title, body, audience, published_at AS publishedAt FROM announcements
       WHERE published_at <= CURRENT_TIMESTAMP ORDER BY published_at DESC LIMIT 20`),
     env.DB.prepare(`SELECT id, title, description, starts_at AS startsAt, ends_at AS endsAt,
@@ -419,6 +419,11 @@ async function portalDashboard(request, env) {
       FROM clubhouse_reservations WHERE user_id = ?1 ORDER BY starts_at DESC`).bind(user.id),
     env.DB.prepare(`SELECT id, category, message, status, created_at AS createdAt
       FROM contact_messages WHERE user_id = ?1 ORDER BY created_at DESC LIMIT 100`).bind(user.id),
+    env.DB.prepare(`SELECT id, guest_name AS guestName, starts_on AS startsOn, ends_on AS endsOn,
+      pool_responsibility_acknowledged AS poolResponsibilityAcknowledged,
+      CASE WHEN status = 'active' AND ends_on < date('now') THEN 'expired' ELSE status END AS status,
+      created_at AS createdAt
+      FROM guest_registrations WHERE registered_by = ?1 ORDER BY created_at DESC LIMIT 100`).bind(user.id),
   ])
   return json({
     announcements: announcements.results,
@@ -426,6 +431,7 @@ async function portalDashboard(request, env) {
     documents: documents.results,
     reservations: reservations.results,
     messages: messages.results,
+    guests: guests.results,
   })
 }
 
@@ -657,6 +663,52 @@ async function createResidentMessage(request, env) {
   return json({ id, status: 'received' }, { status: 201 })
 }
 
+function registrationDate(value) {
+  const text = String(value || '')
+  if (!/^\d{4}-\d{2}-\d{2}$/.test(text) || Number.isNaN(new Date(`${text}T12:00:00Z`).getTime())) {
+    throw new ResponseError('Enter valid guest stay dates.', 400)
+  }
+  return text
+}
+
+async function createGuestRegistration(request, env) {
+  const user = await requireUser(request, env)
+  const body = await readJson(request)
+  const guestName = cleanText(body.guestName, 160, true)
+  const startsOn = registrationDate(body.startsOn)
+  const endsOn = registrationDate(body.endsOn)
+  if (endsOn < startsOn) throw new ResponseError('The guest departure date cannot be before the arrival date.', 400)
+  if (endsOn < new Date().toISOString().slice(0, 10)) throw new ResponseError('The guest stay must not already be over.', 400)
+  if (body.poolResponsibilityAcknowledged !== true) {
+    throw new ResponseError('You must acknowledge responsibility for your guest at the pool.', 400)
+  }
+  const id = crypto.randomUUID()
+  await env.DB.batch([
+    env.DB.prepare(`INSERT INTO guest_registrations (id, property_id, registered_by, guest_name, starts_on,
+      ends_on, pool_responsibility_acknowledged) VALUES (?1, ?2, ?3, ?4, ?5, ?6, 1)`)
+      .bind(id, user.propertyId, user.id, guestName, startsOn, endsOn),
+    env.DB.prepare(`INSERT INTO audit_log (actor_user_id, action, target_type, target_id, details_json)
+      VALUES (?1, 'guest.registered', 'property', ?2, ?3)`).bind(user.id, String(user.propertyId),
+      JSON.stringify({ guestRegistrationId: id, guestName, startsOn, endsOn, poolResponsibilityAcknowledged: true })),
+  ])
+  return json({ id, status: 'active' }, { status: 201 })
+}
+
+async function revokeGuestRegistration(request, env, id) {
+  const user = await requireUser(request, env)
+  const guest = await env.DB.prepare(`SELECT id, property_id AS propertyId, guest_name AS guestName
+    FROM guest_registrations WHERE id = ?1 AND registered_by = ?2`).bind(id, user.id).first()
+  if (!guest) throw new ResponseError('Guest registration not found.', 404)
+  await env.DB.batch([
+    env.DB.prepare(`UPDATE guest_registrations SET status = 'revoked', updated_at = CURRENT_TIMESTAMP
+      WHERE id = ?1`).bind(id),
+    env.DB.prepare(`INSERT INTO audit_log (actor_user_id, action, target_type, target_id, details_json)
+      VALUES (?1, 'guest.revoked', 'property', ?2, ?3)`).bind(user.id, String(guest.propertyId),
+      JSON.stringify({ guestRegistrationId: id, guestName: guest.guestName })),
+  ])
+  return json({ status: 'revoked' })
+}
+
 async function updateContactMessage(request, env, id) {
   await requireAdmin(request, env)
   const body = await readJson(request)
@@ -859,7 +911,7 @@ async function propertyDetails(request, env, propertyId) {
     FROM properties INNER JOIN hoa_phases ON hoa_phases.id = properties.phase_id WHERE properties.id = ?1`)
     .bind(propertyId).first()
   if (!property) throw new ResponseError('Property not found.', 404)
-  const [residents, reservations, contacts, communications, poolCards, audit] = await env.DB.batch([
+  const [residents, reservations, contacts, communications, poolCards, guests, audit] = await env.DB.batch([
     env.DB.prepare(`SELECT id, first_name AS firstName, last_name AS lastName, email, phone, resident_type AS residentType,
       role, status, created_at AS createdAt, last_login_at AS lastLoginAt FROM users WHERE property_id = ?1
       ORDER BY CASE resident_type WHEN 'owner' THEN 0 WHEN 'tenant' THEN 1 ELSE 2 END, last_name, first_name`).bind(propertyId),
@@ -879,6 +931,14 @@ async function propertyDetails(request, env, propertyId) {
       assigned.first_name || ' ' || assigned.last_name AS assignedName
       FROM pool_access_cards LEFT JOIN users AS assigned ON assigned.id = pool_access_cards.assigned_user_id
       WHERE pool_access_cards.property_id = ?1 ORDER BY pool_access_cards.issued_at DESC`).bind(propertyId),
+    env.DB.prepare(`SELECT guest_registrations.id, guest_registrations.guest_name AS guestName,
+      guest_registrations.starts_on AS startsOn, guest_registrations.ends_on AS endsOn,
+      guest_registrations.pool_responsibility_acknowledged AS poolResponsibilityAcknowledged,
+      CASE WHEN guest_registrations.status = 'active' AND guest_registrations.ends_on < date('now')
+        THEN 'expired' ELSE guest_registrations.status END AS status, guest_registrations.created_at AS createdAt,
+      users.first_name || ' ' || users.last_name AS registeredByName
+      FROM guest_registrations INNER JOIN users ON users.id = guest_registrations.registered_by
+      WHERE guest_registrations.property_id = ?1 ORDER BY guest_registrations.created_at DESC LIMIT 200`).bind(propertyId),
     env.DB.prepare(`SELECT audit_log.id, audit_log.action, audit_log.target_type AS targetType,
       audit_log.target_id AS targetId, audit_log.details_json AS detailsJson, audit_log.created_at AS createdAt,
       actor.first_name || ' ' || actor.last_name AS actorName FROM audit_log
@@ -888,7 +948,8 @@ async function propertyDetails(request, env, propertyId) {
       ORDER BY audit_log.created_at DESC LIMIT 100`).bind(propertyId),
   ])
   return json({ property, residents: residents.results, reservations: reservations.results,
-    contacts: contacts.results, communications: communications.results, poolCards: poolCards.results, audit: audit.results })
+    contacts: contacts.results, communications: communications.results, poolCards: poolCards.results,
+    guests: guests.results, audit: audit.results })
 }
 
 async function createPoolCard(request, env, propertyId) {
@@ -1349,6 +1410,9 @@ async function handleApi(request, env) {
   if (request.method === 'POST' && url.pathname === '/api/auth/logout') return logout(request, env)
   if (request.method === 'GET' && url.pathname === '/api/portal/dashboard') return portalDashboard(request, env)
   if (request.method === 'POST' && url.pathname === '/api/portal/messages') return createResidentMessage(request, env)
+  if (request.method === 'POST' && url.pathname === '/api/portal/guests') return createGuestRegistration(request, env)
+  const guestMatch = url.pathname.match(/^\/api\/portal\/guests\/([^/]+)$/)
+  if (guestMatch && request.method === 'DELETE') return revokeGuestRegistration(request, env, guestMatch[1])
   if (request.method === 'PATCH' && url.pathname === '/api/portal/preferences') return updateNotificationPreferences(request, env)
   if (request.method === 'POST' && url.pathname === '/api/portal/reservations') return createReservation(request, env)
   const reservationMatch = url.pathname.match(/^\/api\/portal\/reservations\/([^/]+)$/)
