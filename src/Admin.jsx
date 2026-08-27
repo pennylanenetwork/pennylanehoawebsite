@@ -36,10 +36,10 @@ async function optimizePhoto(file) {
 }
 
 export default function Admin() {
-  const [tab, setTab] = useState('accounts')
+  const [tab, setTab] = useState('overview')
   const [user, setUser] = useState(null)
   const [accounts, setAccounts] = useState([])
-  const [data, setData] = useState({ properties: [], announcements: [], events: [], documents: [], reservations: [], messages: [], photos: [], guests: [], poolCards: [] })
+  const [data, setData] = useState({ properties: [], announcements: [], events: [], documents: [], reservations: [], messages: [], photos: [], guests: [], poolCards: [], clubhouse: null, blackouts: [] })
   const [forms, setForms] = useState(emptyForms)
   const [editing, setEditing] = useState(null)
   const [documentMode, setDocumentMode] = useState('upload')
@@ -169,14 +169,26 @@ export default function Admin() {
     } catch (requestError) { setError(requestError.message) }
   }
 
-  async function decideReservation(id, decision, reason = '') {
+  async function decideReservation(id, decision, reason = '', override = {}) {
     setError('')
     setNotice('')
     try {
-      await api(`/api/admin/reservations/${id}`, { method: 'PATCH', body: JSON.stringify({ decision, reason }) })
+      await api(`/api/admin/reservations/${id}`, { method: 'PATCH', body: JSON.stringify({ decision, reason, ...override }) })
       setNotice(decision === 'approve' ? 'Reservation approved and added to the members calendar.' : 'Reservation denied and the resident was notified.')
       await load()
     } catch (requestError) { setError(requestError.message) }
+  }
+
+  async function saveClubhouseSettings(settings) {
+    setError(''); setNotice('')
+    try { await api('/api/admin/clubhouse/settings', { method: 'PATCH', body: JSON.stringify(settings) }); setNotice('Clubhouse controls saved.'); await load(); return true }
+    catch (requestError) { setError(requestError.message); return false }
+  }
+
+  async function addBlackout(blackout) {
+    setError(''); setNotice('')
+    try { await api('/api/admin/clubhouse/blackouts', { method: 'POST', body: JSON.stringify({ ...blackout, startsAt: new Date(blackout.startsAt).toISOString(), endsAt: new Date(blackout.endsAt).toISOString() }) }); setNotice('Blackout period added.'); await load(); return true }
+    catch (requestError) { setError(requestError.message); return false }
   }
 
   async function updateMessage(id, status, adminNotes) {
@@ -226,7 +238,7 @@ export default function Admin() {
     } catch (requestError) { setError(requestError.message) }
   }
 
-  const tabs = ['accounts', 'properties', 'access', 'announcements', 'events', 'documents', 'photos', 'reservations', 'messages']
+  const tabs = ['overview', 'accounts', 'properties', 'access', 'announcements', 'events', 'documents', 'photos', 'reservations', 'messages']
 
   return <div className="portal-shell admin-shell">
     <header className="portal-header">
@@ -240,6 +252,8 @@ export default function Admin() {
       </nav>
       {notice && <p className="form-notice" role="status">{notice}</p>}
       {error && <p className="form-error" role="alert">{error}</p>}
+
+      {tab === 'overview' && <AdminOverview accounts={accounts} data={data} onOpen={setTab} />}
 
       {tab === 'accounts' && <section><div className="account-tools"><p>{accounts.length} resident accounts</p><a className="quiet-button" href="/api/admin/users.csv">Download CSV</a></div><div className="resident-admin-list">{accounts.map((account) => <AccountReview key={account.id} account={account} currentUser={user} properties={data.properties} onStatus={updateAccount} onSave={updateAccountProfile} />)}</div></section>}
 
@@ -282,10 +296,28 @@ export default function Admin() {
 
       {tab === 'photos' && <PhotoManager photos={data.photos} onUpload={uploadPhoto} onUpdate={updatePhoto} onDelete={(id) => remove('gallery', id, 'Delete this photo permanently?')} />}
 
-      {tab === 'reservations' && <div className="reservation-admin-list">{data.reservations.map((item) => <ReservationReview key={item.id} item={item} onDecide={decideReservation} onCancel={() => remove('reservations', item.id, 'Cancel this clubhouse reservation?')} />)}{data.reservations.length === 0 && <p className="empty-state">No clubhouse reservation requests yet.</p>}</div>}
+      {tab === 'reservations' && <div><ClubhouseControls settings={data.clubhouse} blackouts={data.blackouts} onSave={saveClubhouseSettings} onAddBlackout={addBlackout} onDeleteBlackout={(id) => remove('clubhouse/blackouts', id, 'Remove this clubhouse blackout period?')} /><div className="reservation-admin-list">{data.reservations.map((item) => <ReservationReview key={item.id} item={item} onDecide={decideReservation} onCancel={() => remove('reservations', item.id, 'Cancel this clubhouse reservation?')} />)}{data.reservations.length === 0 && <p className="empty-state">No clubhouse reservation requests yet.</p>}</div></div>}
       {tab === 'messages' && <div className="message-admin-list">{data.messages.map((item) => <MessageReview key={item.id} item={item} onUpdate={updateMessage} onReply={replyToMessage} />)}{data.messages.length === 0 && <p className="empty-state">No contact messages yet.</p>}</div>}
     </main>
   </div>
+}
+
+function AdminOverview({ accounts, data, onOpen }) {
+  const items = [
+    { label: 'Pending accounts', value: accounts.filter((item) => item.status === 'pending').length, tab: 'accounts' },
+    { label: 'Unread messages', value: data.messages.filter((item) => item.status === 'new').length, tab: 'messages' },
+    { label: 'Reservation requests', value: data.reservations.filter((item) => item.status === 'pending').length, tab: 'reservations' },
+    { label: 'Active guests', value: data.guests.filter((item) => item.status === 'active').length, tab: 'access' },
+    { label: 'Lost or stolen cards', value: data.poolCards.filter((item) => ['lost', 'stolen'].includes(item.status)).length, tab: 'access' },
+  ]
+  return <section className="admin-overview"><div className="overview-metrics">{items.map((item) => <button type="button" onClick={() => onOpen(item.tab)} key={item.label}><strong>{item.value}</strong><span>{item.label}</span><small>Open {item.tab}</small></button>)}</div><div className="overview-recent"><section><h2>Next reservations</h2>{data.reservations.filter((item) => ['pending', 'approved'].includes(item.status)).slice(0, 5).map((item) => <div className="data-row" key={item.id}><div><strong>{item.eventName}</strong><small>{item.residentName} | {dateTime(item.startsAt)}</small></div><span className={`status status-${item.status}`}>{item.status}</span></div>)}{data.reservations.length === 0 && <p className="empty-state">No reservation activity.</p>}</section><section><h2>Recent messages</h2>{data.messages.slice(0, 5).map((item) => <div className="data-row" key={item.id}><div><strong>{item.name}</strong><small>{item.category} | {dateTime(item.createdAt)}</small></div><span className={`status status-${item.status}`}>{item.status}</span></div>)}{data.messages.length === 0 && <p className="empty-state">No recent messages.</p>}</section></div></section>
+}
+
+function ClubhouseControls({ settings, blackouts, onSave, onAddBlackout, onDeleteBlackout }) {
+  const [form, setForm] = useState(settings || { opensAt: '08:00', closesAt: '23:00', cleanupBufferMinutes: 60, advanceDays: 90, maxActivePerHousehold: 2 })
+  const emptyBlackout = { title: '', startsAt: '', endsAt: '', notes: '' }
+  const [blackout, setBlackout] = useState(emptyBlackout)
+  return <section className="clubhouse-controls"><div className="clubhouse-settings"><h2>Reservation controls</h2><form onSubmit={async (event) => { event.preventDefault(); await onSave({ ...form, cleanupBufferMinutes: Number(form.cleanupBufferMinutes), advanceDays: Number(form.advanceDays), maxActivePerHousehold: Number(form.maxActivePerHousehold) }) }}><label>Opens<input required type="time" value={form.opensAt} onChange={(event) => setForm({ ...form, opensAt: event.target.value })} /></label><label>Closes<input required type="time" value={form.closesAt} onChange={(event) => setForm({ ...form, closesAt: event.target.value })} /></label><label>Cleanup buffer<input required type="number" min="0" max="240" value={form.cleanupBufferMinutes} onChange={(event) => setForm({ ...form, cleanupBufferMinutes: event.target.value })} /><span>Minutes before and after reservations.</span></label><label>Advance window<input required type="number" min="1" max="365" value={form.advanceDays} onChange={(event) => setForm({ ...form, advanceDays: event.target.value })} /><span>Maximum days in advance.</span></label><label>Household limit<input required type="number" min="1" max="10" value={form.maxActivePerHousehold} onChange={(event) => setForm({ ...form, maxActivePerHousehold: event.target.value })} /><span>Pending and approved requests.</span></label><button className="primary-button">Save controls</button></form></div><div className="blackout-manager"><h2>Blackout periods</h2><form onSubmit={async (event) => { event.preventDefault(); if (await onAddBlackout(blackout)) setBlackout(emptyBlackout) }}><label>Title<input required maxLength="140" value={blackout.title} onChange={(event) => setBlackout({ ...blackout, title: event.target.value })} /></label><div className="field-row"><label>Starts<input required type="datetime-local" value={blackout.startsAt} onChange={(event) => setBlackout({ ...blackout, startsAt: event.target.value })} /></label><label>Ends<input required type="datetime-local" value={blackout.endsAt} onChange={(event) => setBlackout({ ...blackout, endsAt: event.target.value })} /></label></div><label>Notes<input maxLength="1000" value={blackout.notes} onChange={(event) => setBlackout({ ...blackout, notes: event.target.value })} /></label><button className="primary-button">Add blackout</button></form><div className="blackout-list">{blackouts.map((item) => <article key={item.id}><div><strong>{item.title}</strong><small>{dateTime(item.startsAt)} to {dateTime(item.endsAt)}</small></div><button type="button" className="row-delete" onClick={() => onDeleteBlackout(item.id)}>Remove</button></article>)}{blackouts.length === 0 && <p className="empty-state">No blackout periods configured.</p>}</div></div></section>
 }
 
 function AccessWorkspace({ guests, poolCards }) {
@@ -327,7 +359,9 @@ function DataRow({ title, detail, meta, actions, onOpen }) {
 
 function ReservationReview({ item, onDecide, onCancel }) {
   const [reason, setReason] = useState('')
-  return <article className={`reservation-review ${item.status === 'pending' ? 'is-pending' : ''}`}><header><div><strong>{item.eventName}</strong><small>{item.residentName} | {item.address}</small></div><span className={`status status-${item.status}`}>{item.status}</span></header><dl><div><dt>Schedule</dt><dd>{dateTime(item.startsAt)} to {dateTime(item.endsAt)}</dd></div><div><dt>Event</dt><dd>{item.eventType}</dd></div><div><dt>Attendance</dt><dd>{item.attendeeCount}</dd></div><div><dt>Cleaning</dt><dd>{item.cleaningMethod === 'professional' ? 'Professional cleaner' : 'Resident will clean'}</dd></div></dl>{item.notes && <p><strong>Notes:</strong> {item.notes}</p>}{item.decisionReason && <p className="decision-reason"><strong>Decision reason:</strong> {item.decisionReason}</p>}{item.status === 'pending' && <div className="decision-controls"><button type="button" className="primary-button" onClick={() => onDecide(item.id, 'approve')}>Approve</button><label>Reason required to deny<textarea maxLength="1000" value={reason} onChange={(event) => setReason(event.target.value)} /></label><button type="button" className="row-delete" disabled={!reason.trim()} onClick={() => onDecide(item.id, 'deny', reason)}>Deny request</button></div>}{item.status === 'approved' && <button type="button" className="row-delete" onClick={onCancel}>Cancel reservation</button>}</article>
+  const [overrideConflicts, setOverrideConflicts] = useState(false)
+  const [overrideReason, setOverrideReason] = useState('')
+  return <article className={`reservation-review ${item.status === 'pending' ? 'is-pending' : ''}`}><header><div><strong>{item.eventName}</strong><small>{item.residentName} | {item.address}</small></div><span className={`status status-${item.status}`}>{item.status}</span></header><dl><div><dt>Schedule</dt><dd>{dateTime(item.startsAt)} to {dateTime(item.endsAt)}</dd></div><div><dt>Event</dt><dd>{item.eventType}</dd></div><div><dt>Attendance</dt><dd>{item.attendeeCount}</dd></div><div><dt>Cleaning</dt><dd>{item.cleaningMethod === 'professional' ? 'Professional cleaner' : 'Resident will clean'}</dd></div></dl>{item.notes && <p><strong>Notes:</strong> {item.notes}</p>}{item.decisionReason && <p className="decision-reason"><strong>Decision reason:</strong> {item.decisionReason}</p>}{item.overrideReason && <p className="override-note"><strong>Availability override:</strong> {item.overrideReason}</p>}{item.status === 'pending' && <><div className="override-controls"><label className="rules-check"><input type="checkbox" checked={overrideConflicts} onChange={(event) => setOverrideConflicts(event.target.checked)} /><span><strong>Override availability rules</strong><small>Use only when approving despite operating hours, a blackout, cleanup buffer, or another approved reservation.</small></span></label>{overrideConflicts && <label>Required override reason<textarea required maxLength="1000" value={overrideReason} onChange={(event) => setOverrideReason(event.target.value)} /></label>}</div><div className="decision-controls"><button type="button" className="primary-button" disabled={overrideConflicts && !overrideReason.trim()} onClick={() => onDecide(item.id, 'approve', '', { overrideConflicts, overrideReason })}>{overrideConflicts ? 'Approve with override' : 'Approve'}</button><label>Reason required to deny<textarea maxLength="1000" value={reason} onChange={(event) => setReason(event.target.value)} /></label><button type="button" className="row-delete" disabled={!reason.trim()} onClick={() => onDecide(item.id, 'deny', reason)}>Deny request</button></div></>}{item.status === 'approved' && <button type="button" className="row-delete" onClick={onCancel}>Cancel reservation</button>}</article>
 }
 
 function MessageReview({ item, onUpdate, onReply }) {

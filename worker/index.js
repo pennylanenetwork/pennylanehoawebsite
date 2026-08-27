@@ -408,6 +408,47 @@ function validDateRange(startsAtValue, endsAtValue, requireFuture = false) {
   return { startsAt: starts.toISOString(), endsAt: ends.toISOString() }
 }
 
+async function clubhouseSettings(env) {
+  return env.DB.prepare(`SELECT opens_at AS opensAt, closes_at AS closesAt,
+    cleanup_buffer_minutes AS cleanupBufferMinutes, advance_days AS advanceDays,
+    max_active_per_household AS maxActivePerHousehold FROM clubhouse_settings WHERE id = 1`).first()
+}
+
+function lindaleDateParts(value) {
+  const parts = new Intl.DateTimeFormat('en-US', { timeZone: 'America/Chicago', year: 'numeric', month: '2-digit',
+    day: '2-digit', hour: '2-digit', minute: '2-digit', hourCycle: 'h23' }).formatToParts(new Date(value))
+  return Object.fromEntries(parts.map((part) => [part.type, part.value]))
+}
+
+function timeMinutes(value) {
+  const [hours, minutes] = String(value).split(':').map(Number)
+  return hours * 60 + minutes
+}
+
+async function clubhouseAvailability(env, startsAt, endsAt, excludeReservationId = '') {
+  const settings = await clubhouseSettings(env)
+  const start = lindaleDateParts(startsAt)
+  const end = lindaleDateParts(endsAt)
+  const startDay = `${start.year}-${start.month}-${start.day}`
+  const endDay = `${end.year}-${end.month}-${end.day}`
+  const startMinutes = Number(start.hour) * 60 + Number(start.minute)
+  const endMinutes = Number(end.hour) * 60 + Number(end.minute)
+  if (startDay !== endDay || startMinutes < timeMinutes(settings.opensAt) || endMinutes > timeMinutes(settings.closesAt)) {
+    return { available: false, reason: `Reservations must be within clubhouse hours (${settings.opensAt} to ${settings.closesAt}) on one calendar day.` }
+  }
+  const blackout = await env.DB.prepare(`SELECT title FROM clubhouse_blackouts
+    WHERE starts_at < ?2 AND ends_at > ?1 LIMIT 1`).bind(startsAt, endsAt).first()
+  if (blackout) return { available: false, reason: `The clubhouse is unavailable during: ${blackout.title}.` }
+  const bufferMilliseconds = settings.cleanupBufferMinutes * 60000
+  const bufferedStart = new Date(new Date(startsAt).getTime() - bufferMilliseconds).toISOString()
+  const bufferedEnd = new Date(new Date(endsAt).getTime() + bufferMilliseconds).toISOString()
+  const conflict = await env.DB.prepare(`SELECT event_name AS eventName FROM clubhouse_reservations
+    WHERE status = 'approved' AND id != ?3 AND starts_at < ?2 AND ends_at > ?1 LIMIT 1`)
+    .bind(bufferedStart, bufferedEnd, excludeReservationId).first()
+  if (conflict) return { available: false, reason: `The requested time conflicts with an approved reservation or its ${settings.cleanupBufferMinutes}-minute cleanup buffer.` }
+  return { available: true, settings }
+}
+
 async function portalDashboard(request, env) {
   const user = await requireUser(request, env)
   const [announcements, events, documents, reservations, messages, guests, household] = await env.DB.batch([
@@ -457,7 +498,8 @@ async function publicContent(env) {
 
 async function adminDashboard(request, env) {
   await requireAdmin(request, env)
-  const [properties, phases, announcements, events, documents, reservations, messages, photos, guests, poolCards] = await env.DB.batch([
+  const [properties, phases, announcements, events, documents, reservations, messages, photos, guests, poolCards,
+    clubhouse, blackouts] = await env.DB.batch([
     env.DB.prepare(`SELECT properties.id, properties.street_number || ' ' || properties.street_name || ' ' || properties.street_suffix AS address,
       properties.status, hoa_phases.name AS phase FROM properties INNER JOIN hoa_phases ON hoa_phases.id = properties.phase_id
       ORDER BY properties.street_name, properties.street_number`),
@@ -472,6 +514,7 @@ async function adminDashboard(request, env) {
       clubhouse_reservations.attendee_count AS attendeeCount, clubhouse_reservations.event_type AS eventType,
       clubhouse_reservations.cleaning_method AS cleaningMethod, clubhouse_reservations.notes,
       clubhouse_reservations.status, clubhouse_reservations.decision_reason AS decisionReason,
+      clubhouse_reservations.override_reason AS overrideReason,
       clubhouse_reservations.created_at AS requestedAt, clubhouse_reservations.reviewed_at AS reviewedAt,
       users.first_name || ' ' || users.last_name AS residentName, users.email,
       properties.street_number || ' ' || properties.street_name || ' ' || properties.street_suffix AS address
@@ -506,10 +549,16 @@ async function adminDashboard(request, env) {
       LEFT JOIN users AS assigned ON assigned.id = pool_access_cards.assigned_user_id
       ORDER BY CASE pool_access_cards.status WHEN 'lost' THEN 0 WHEN 'stolen' THEN 1 WHEN 'active' THEN 2 ELSE 3 END,
       properties.street_name, properties.street_number`),
+    env.DB.prepare(`SELECT opens_at AS opensAt, closes_at AS closesAt,
+      cleanup_buffer_minutes AS cleanupBufferMinutes, advance_days AS advanceDays,
+      max_active_per_household AS maxActivePerHousehold FROM clubhouse_settings WHERE id = 1`),
+    env.DB.prepare(`SELECT id, title, starts_at AS startsAt, ends_at AS endsAt, notes,
+      created_at AS createdAt FROM clubhouse_blackouts ORDER BY starts_at DESC LIMIT 200`),
   ])
   return json({ properties: properties.results, phases: phases.results, announcements: announcements.results,
     events: events.results, documents: documents.results, reservations: reservations.results,
-    messages: messages.results, photos: photos.results, guests: guests.results, poolCards: poolCards.results })
+    messages: messages.results, photos: photos.results, guests: guests.results, poolCards: poolCards.results,
+    clubhouse: clubhouse.results[0], blackouts: blackouts.results })
 }
 
 async function publicGallery(env) {
@@ -1081,6 +1130,63 @@ async function updatePoolCard(request, env, id) {
   return json({ status })
 }
 
+async function updateClubhouseSettings(request, env) {
+  const admin = await requireAdmin(request, env)
+  const body = await readJson(request)
+  const opensAt = String(body.opensAt || '')
+  const closesAt = String(body.closesAt || '')
+  const cleanupBufferMinutes = Number(body.cleanupBufferMinutes)
+  const advanceDays = Number(body.advanceDays)
+  const maxActivePerHousehold = Number(body.maxActivePerHousehold)
+  if (!/^\d{2}:\d{2}$/.test(opensAt) || !/^\d{2}:\d{2}$/.test(closesAt)
+    || timeMinutes(opensAt) >= timeMinutes(closesAt)) throw new ResponseError('Enter valid clubhouse operating hours.', 400)
+  if (!Number.isInteger(cleanupBufferMinutes) || cleanupBufferMinutes < 0 || cleanupBufferMinutes > 240
+    || !Number.isInteger(advanceDays) || advanceDays < 1 || advanceDays > 365
+    || !Number.isInteger(maxActivePerHousehold) || maxActivePerHousehold < 1 || maxActivePerHousehold > 10) {
+    throw new ResponseError('Enter valid clubhouse reservation limits.', 400)
+  }
+  await env.DB.batch([
+    env.DB.prepare(`UPDATE clubhouse_settings SET opens_at = ?1, closes_at = ?2,
+      cleanup_buffer_minutes = ?3, advance_days = ?4, max_active_per_household = ?5,
+      updated_at = CURRENT_TIMESTAMP, updated_by = ?6 WHERE id = 1`).bind(opensAt, closesAt,
+      cleanupBufferMinutes, advanceDays, maxActivePerHousehold, admin.id),
+    env.DB.prepare(`INSERT INTO audit_log (actor_user_id, action, target_type, target_id, details_json)
+      VALUES (?1, 'clubhouse.settings_updated', 'clubhouse', 'settings', ?2)`).bind(admin.id,
+      JSON.stringify({ opensAt, closesAt, cleanupBufferMinutes, advanceDays, maxActivePerHousehold })),
+  ])
+  return json({ status: 'updated' })
+}
+
+async function createClubhouseBlackout(request, env) {
+  const admin = await requireAdmin(request, env)
+  const body = await readJson(request)
+  const range = validDateRange(body.startsAt, body.endsAt)
+  const id = crypto.randomUUID()
+  const title = cleanText(body.title, 140, true)
+  const notes = cleanText(body.notes, 1000)
+  await env.DB.batch([
+    env.DB.prepare(`INSERT INTO clubhouse_blackouts (id, title, starts_at, ends_at, notes, created_by)
+      VALUES (?1, ?2, ?3, ?4, ?5, ?6)`).bind(id, title, range.startsAt, range.endsAt, notes, admin.id),
+    env.DB.prepare(`INSERT INTO audit_log (actor_user_id, action, target_type, target_id, details_json)
+      VALUES (?1, 'clubhouse.blackout_created', 'clubhouse_blackout', ?2, ?3)`).bind(admin.id, id,
+      JSON.stringify({ title, startsAt: range.startsAt, endsAt: range.endsAt })),
+  ])
+  return json({ id }, { status: 201 })
+}
+
+async function deleteClubhouseBlackout(request, env, id) {
+  const admin = await requireAdmin(request, env)
+  const blackout = await env.DB.prepare('SELECT title FROM clubhouse_blackouts WHERE id = ?1').bind(id).first()
+  if (!blackout) throw new ResponseError('Blackout period not found.', 404)
+  await env.DB.batch([
+    env.DB.prepare('DELETE FROM clubhouse_blackouts WHERE id = ?1').bind(id),
+    env.DB.prepare(`INSERT INTO audit_log (actor_user_id, action, target_type, target_id, details_json)
+      VALUES (?1, 'clubhouse.blackout_deleted', 'clubhouse_blackout', ?2, ?3)`).bind(admin.id, id,
+      JSON.stringify({ title: blackout.title })),
+  ])
+  return json({ status: 'deleted' })
+}
+
 async function updateAnnouncement(request, env, id) {
   await requireAdmin(request, env)
   const body = await readJson(request)
@@ -1153,15 +1259,19 @@ async function createReservation(request, env) {
   const body = await readJson(request)
   if (body.rulesAcknowledged !== true) throw new ResponseError('You must acknowledge the clubhouse rules.', 400)
   const range = validDateRange(body.startsAt, body.endsAt, true)
-  if (new Date(range.startsAt).getTime() > Date.now() + 90 * 24 * 60 * 60 * 1000) throw new ResponseError('Reservations may be requested up to 90 days in advance.', 400)
+  const settings = await clubhouseSettings(env)
+  if (new Date(range.startsAt).getTime() > Date.now() + settings.advanceDays * 24 * 60 * 60 * 1000) {
+    throw new ResponseError(`Reservations may be requested up to ${settings.advanceDays} days in advance.`, 400)
+  }
   const attendeeCount = Number(body.attendeeCount)
   if (!Number.isInteger(attendeeCount) || attendeeCount < 1 || attendeeCount > 65) throw new ResponseError('Enter an attendee count from 1 to 65.', 400)
   const activeCount = await env.DB.prepare(`SELECT COUNT(*) AS count FROM clubhouse_reservations
     WHERE user_id = ?1 AND status IN ('pending', 'approved') AND ends_at >= CURRENT_TIMESTAMP`).bind(user.id).first('count')
-  if (activeCount >= 2) throw new ResponseError('A household may have no more than two active clubhouse requests.', 409)
-  const conflict = await env.DB.prepare(`SELECT id FROM clubhouse_reservations WHERE status = 'approved'
-    AND starts_at < ?2 AND ends_at > ?1 LIMIT 1`).bind(range.startsAt, range.endsAt).first()
-  if (conflict) throw new ResponseError('The clubhouse is already reserved during that time.', 409)
+  if (activeCount >= settings.maxActivePerHousehold) {
+    throw new ResponseError(`A household may have no more than ${settings.maxActivePerHousehold} active clubhouse requests.`, 409)
+  }
+  const availability = await clubhouseAvailability(env, range.startsAt, range.endsAt)
+  if (!availability.available) throw new ResponseError(availability.reason, 409)
   const reservationId = crypto.randomUUID()
   const eventName = cleanText(body.eventName, 140, true)
   const eventType = cleanText(body.eventType, 100, true)
@@ -1185,6 +1295,8 @@ async function decideReservation(request, env, reservationId) {
   const body = await readJson(request)
   const decision = body.decision
   if (!['approve', 'deny'].includes(decision)) throw new ResponseError('Select approve or deny.', 400)
+  const overrideConflicts = body.overrideConflicts === true
+  const overrideReason = cleanText(body.overrideReason, 1000)
   const reservation = await env.DB.prepare(`SELECT clubhouse_reservations.*, users.email,
     users.first_name AS firstName, users.first_name || ' ' || users.last_name AS residentName
     FROM clubhouse_reservations INNER JOIN users ON users.id = clubhouse_reservations.user_id
@@ -1194,16 +1306,22 @@ async function decideReservation(request, env, reservationId) {
   const reason = cleanText(body.reason, 1000)
   if (decision === 'deny' && !reason) throw new ResponseError('Enter a reason for denying the request.', 400)
   if (decision === 'approve') {
-    const conflict = await env.DB.prepare(`SELECT id FROM clubhouse_reservations WHERE status = 'approved'
-      AND starts_at < ?2 AND ends_at > ?1 LIMIT 1`).bind(reservation.starts_at, reservation.ends_at).first()
-    if (conflict) throw new ResponseError('The clubhouse is already reserved during that time.', 409)
+    const availability = await clubhouseAvailability(env, reservation.starts_at, reservation.ends_at, reservationId)
+    if (!availability.available && !overrideConflicts) throw new ResponseError(availability.reason, 409)
+    if (!availability.available && !overrideReason) throw new ResponseError('Document why this availability rule is being overridden.', 400)
     const eventId = crypto.randomUUID()
     await env.DB.batch([
       env.DB.prepare(`INSERT INTO events (id, title, description, starts_at, ends_at, audience, event_type, created_by)
         VALUES (?1, ?2, ?3, ?4, ?5, 'members', 'clubhouse', ?6)`).bind(eventId,
         `Clubhouse reserved: ${reservation.event_name}`, reservation.event_type, reservation.starts_at, reservation.ends_at, reservation.user_id),
       env.DB.prepare(`UPDATE clubhouse_reservations SET event_id = ?1, status = 'approved', decision_reason = NULL,
-        reviewed_by = ?2, reviewed_at = CURRENT_TIMESTAMP, updated_at = CURRENT_TIMESTAMP WHERE id = ?3`).bind(eventId, admin.id, reservationId),
+        override_reason = ?2, override_by = CASE WHEN ?2 IS NULL THEN NULL ELSE ?3 END,
+        reviewed_by = ?3, reviewed_at = CURRENT_TIMESTAMP, updated_at = CURRENT_TIMESTAMP WHERE id = ?4`)
+        .bind(eventId, !availability.available ? overrideReason : null, admin.id, reservationId),
+      env.DB.prepare(`INSERT INTO audit_log (actor_user_id, action, target_type, target_id, details_json)
+        VALUES (?1, ?2, 'reservation', ?3, ?4)`).bind(admin.id,
+        !availability.available ? 'reservation.approved_with_override' : 'reservation.approved', reservationId,
+        JSON.stringify({ overrideReason: !availability.available ? overrideReason : null })),
     ])
     reservation.decisionReason = null
   } else {
@@ -1587,6 +1705,10 @@ async function handleApi(request, env) {
   if (request.method === 'POST' && url.pathname === '/api/admin/documents') return createDocument(request, env)
   if (request.method === 'POST' && url.pathname === '/api/admin/documents/upload') return uploadDocument(request, env)
   if (request.method === 'POST' && url.pathname === '/api/admin/gallery') return uploadGalleryPhoto(request, env)
+  if (request.method === 'PATCH' && url.pathname === '/api/admin/clubhouse/settings') return updateClubhouseSettings(request, env)
+  if (request.method === 'POST' && url.pathname === '/api/admin/clubhouse/blackouts') return createClubhouseBlackout(request, env)
+  const blackoutMatch = url.pathname.match(/^\/api\/admin\/clubhouse\/blackouts\/([^/]+)$/)
+  if (blackoutMatch && request.method === 'DELETE') return deleteClubhouseBlackout(request, env, blackoutMatch[1])
   const propertyPoolCardsMatch = url.pathname.match(/^\/api\/admin\/properties\/([^/]+)\/pool-cards$/)
   if (propertyPoolCardsMatch && request.method === 'POST') return createPoolCard(request, env, propertyPoolCardsMatch[1])
   const poolCardMatch = url.pathname.match(/^\/api\/admin\/pool-cards\/([^/]+)$/)
