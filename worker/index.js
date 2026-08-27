@@ -385,6 +385,12 @@ async function requireAdmin(request, env) {
   return user
 }
 
+async function requireSuperAdmin(request, env) {
+  const user = await requireUser(request, env)
+  if (user.role !== 'super_admin') throw new ResponseError('Super administrator access required.', 403)
+  return user
+}
+
 async function requireUser(request, env) {
   const user = await currentUser(request, env)
   if (!user) throw new ResponseError('Authentication required.', 401)
@@ -895,6 +901,55 @@ async function replyToResidentMessage(request, env, id) {
         `Resident reply: ${message.category}`, reply.slice(0, 500), id),
   ])
   return json({ id: replyId, status: 'received' }, { status: 201 })
+}
+
+async function deleteContactMessage(request, env, id, superAdminOnly = false) {
+  const user = await requireUser(request, env)
+  if (superAdminOnly && user.role !== 'super_admin') throw new ResponseError('Super administrator access required.', 403)
+  const message = await env.DB.prepare('SELECT id, user_id AS userId FROM contact_messages WHERE id = ?1').bind(id).first()
+  if (!message) throw new ResponseError('Message not found.', 404)
+  if (user.role !== 'super_admin' && message.userId !== user.id) throw new ResponseError('Not permitted.', 403)
+  await env.DB.batch([
+    env.DB.prepare(`DELETE FROM communication_log WHERE related_id = ?1
+      AND related_type IN ('contact', 'contact_reply')`).bind(id),
+    env.DB.prepare(`DELETE FROM audit_log WHERE target_id = ?1
+      AND target_type = 'contact_message'`).bind(id),
+    env.DB.prepare('DELETE FROM contact_messages WHERE id = ?1').bind(id),
+  ])
+  return json({ status: 'deleted' })
+}
+
+async function deleteEventPermanently(request, env, id) {
+  await requireSuperAdmin(request, env)
+  const event = await env.DB.prepare('SELECT id FROM events WHERE id = ?1').bind(id).first()
+  if (!event) throw new ResponseError('Event not found.', 404)
+  await env.DB.batch([
+    env.DB.prepare('DELETE FROM clubhouse_reservations WHERE event_id = ?1').bind(id),
+    env.DB.prepare('DELETE FROM events WHERE id = ?1').bind(id),
+  ])
+  return json({ status: 'deleted' })
+}
+
+async function deleteReservationPermanently(request, env, id) {
+  await requireSuperAdmin(request, env)
+  const reservation = await env.DB.prepare('SELECT event_id AS eventId FROM clubhouse_reservations WHERE id = ?1').bind(id).first()
+  if (!reservation) throw new ResponseError('Reservation not found.', 404)
+  const statements = [
+    env.DB.prepare('DELETE FROM audit_log WHERE target_id = ?1 AND target_type = ?2').bind(id, 'reservation'),
+    env.DB.prepare('DELETE FROM clubhouse_reservations WHERE id = ?1').bind(id),
+  ]
+  if (reservation.eventId) statements.push(env.DB.prepare('DELETE FROM events WHERE id = ?1').bind(reservation.eventId))
+  await env.DB.batch(statements)
+  return json({ status: 'deleted' })
+}
+
+async function deleteHistoryRecord(request, env, kind, id) {
+  await requireSuperAdmin(request, env)
+  const table = kind === 'communications' ? 'communication_log' : kind === 'audit' ? 'audit_log' : null
+  if (!table) throw new ResponseError('History record not found.', 404)
+  const result = await env.DB.prepare(`DELETE FROM ${table} WHERE id = ?1`).bind(id).run()
+  if (!result.meta.changes) throw new ResponseError('History record not found.', 404)
+  return json({ status: 'deleted' })
 }
 
 async function createProperty(request, env) {
@@ -1748,6 +1803,8 @@ async function handleApi(request, env) {
   if (request.method === 'POST' && url.pathname === '/api/auth/logout') return logout(request, env)
   if (request.method === 'GET' && url.pathname === '/api/portal/dashboard') return portalDashboard(request, env)
   if (request.method === 'POST' && url.pathname === '/api/portal/messages') return createResidentMessage(request, env)
+  const portalMessageMatch = url.pathname.match(/^\/api\/portal\/messages\/([^/]+)$/)
+  if (portalMessageMatch && request.method === 'DELETE') return deleteContactMessage(request, env, portalMessageMatch[1])
   const portalMessageReplyMatch = url.pathname.match(/^\/api\/portal\/messages\/([^/]+)\/replies$/)
   if (portalMessageReplyMatch && request.method === 'POST') return replyToResidentMessage(request, env, portalMessageReplyMatch[1])
   if (request.method === 'POST' && url.pathname === '/api/portal/guests') return createGuestRegistration(request, env)
@@ -1788,6 +1845,8 @@ async function handleApi(request, env) {
   const eventMatch = url.pathname.match(/^\/api\/admin\/events\/([^/]+)$/)
   if (eventMatch && request.method === 'PATCH') return updateEvent(request, env, eventMatch[1])
   if (eventMatch && request.method === 'DELETE') return cancelEvent(request, env, eventMatch[1])
+  const permanentEventMatch = url.pathname.match(/^\/api\/admin\/events\/([^/]+)\/permanent$/)
+  if (permanentEventMatch && request.method === 'DELETE') return deleteEventPermanently(request, env, permanentEventMatch[1])
   const documentMatch = url.pathname.match(/^\/api\/admin\/documents\/([^/]+)$/)
   if (documentMatch && request.method === 'PATCH') return updateDocument(request, env, documentMatch[1])
   if (documentMatch && request.method === 'DELETE') return deleteDocument(request, env, documentMatch[1])
@@ -1796,8 +1855,11 @@ async function handleApi(request, env) {
   const adminReservationMatch = url.pathname.match(/^\/api\/admin\/reservations\/([^/]+)$/)
   if (adminReservationMatch && request.method === 'PATCH') return decideReservation(request, env, adminReservationMatch[1])
   if (adminReservationMatch && request.method === 'DELETE') return cancelReservation(request, env, adminReservationMatch[1])
+  const permanentReservationMatch = url.pathname.match(/^\/api\/admin\/reservations\/([^/]+)\/permanent$/)
+  if (permanentReservationMatch && request.method === 'DELETE') return deleteReservationPermanently(request, env, permanentReservationMatch[1])
   const contactMessageMatch = url.pathname.match(/^\/api\/admin\/messages\/([^/]+)$/)
   if (contactMessageMatch && request.method === 'PATCH') return updateContactMessage(request, env, contactMessageMatch[1])
+  if (contactMessageMatch && request.method === 'DELETE') return deleteContactMessage(request, env, contactMessageMatch[1], true)
   const contactMessageReplyMatch = url.pathname.match(/^\/api\/admin\/messages\/([^/]+)\/reply$/)
   if (contactMessageReplyMatch && request.method === 'POST') return replyToContactMessage(request, env, contactMessageReplyMatch[1])
   const galleryMatch = url.pathname.match(/^\/api\/admin\/gallery\/([^/]+)$/)
@@ -1807,6 +1869,8 @@ async function handleApi(request, env) {
   if (request.method === 'PATCH' && statusMatch) return updateUserStatus(request, env, statusMatch[1])
   const userMatch = url.pathname.match(/^\/api\/admin\/users\/([^/]+)$/)
   if (request.method === 'PATCH' && userMatch) return updateUserProfile(request, env, userMatch[1])
+  const historyMatch = url.pathname.match(/^\/api\/admin\/history\/(communications|audit)\/([^/]+)$/)
+  if (historyMatch && request.method === 'DELETE') return deleteHistoryRecord(request, env, historyMatch[1], historyMatch[2])
   return json({ error: 'Not found' }, { status: 404 })
 }
 
