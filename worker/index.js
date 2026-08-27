@@ -451,7 +451,7 @@ async function clubhouseAvailability(env, startsAt, endsAt, excludeReservationId
 
 async function portalDashboard(request, env) {
   const user = await requireUser(request, env)
-  const [announcements, events, documents, reservations, messages, guests, household] = await env.DB.batch([
+  const [announcements, events, documents, reservations, messages, messageReplies, guests, household] = await env.DB.batch([
     env.DB.prepare(`SELECT id, title, body, audience, published_at AS publishedAt FROM announcements
       WHERE published_at <= CURRENT_TIMESTAMP ORDER BY published_at DESC LIMIT 20`),
     env.DB.prepare(`SELECT id, title, description, starts_at AS startsAt, ends_at AS endsAt,
@@ -464,6 +464,12 @@ async function portalDashboard(request, env) {
       FROM clubhouse_reservations WHERE user_id = ?1 ORDER BY starts_at DESC`).bind(user.id),
     env.DB.prepare(`SELECT id, category, message, status, created_at AS createdAt
       FROM contact_messages WHERE user_id = ?1 ORDER BY created_at DESC LIMIT 100`).bind(user.id),
+    env.DB.prepare(`SELECT contact_message_replies.id, contact_message_replies.contact_message_id AS messageId,
+      contact_message_replies.author_role AS authorRole, contact_message_replies.body,
+      contact_message_replies.created_at AS createdAt
+      FROM contact_message_replies INNER JOIN contact_messages
+        ON contact_messages.id = contact_message_replies.contact_message_id
+      WHERE contact_messages.user_id = ?1 ORDER BY contact_message_replies.created_at`).bind(user.id),
     env.DB.prepare(`SELECT id, guest_name AS guestName, starts_on AS startsOn, ends_on AS endsOn,
       pool_responsibility_acknowledged AS poolResponsibilityAcknowledged,
       CASE WHEN status = 'active' AND ends_on < date('now') THEN 'expired' ELSE status END AS status,
@@ -473,12 +479,17 @@ async function portalDashboard(request, env) {
       created_at AS createdAt FROM users WHERE property_id = ?1 AND resident_type = 'household_member'
       ORDER BY created_at DESC`).bind(user.propertyId),
   ])
+  const repliesByMessage = messageReplies.results.reduce((result, reply) => {
+    if (!result[reply.messageId]) result[reply.messageId] = []
+    result[reply.messageId].push(reply)
+    return result
+  }, {})
   return json({
     announcements: announcements.results,
     events: events.results,
     documents: documents.results,
     reservations: reservations.results,
-    messages: messages.results,
+    messages: messages.results.map((message) => ({ ...message, replies: repliesByMessage[message.id] || [] })),
     guests: guests.results,
     household: user.residentType === 'owner' ? household.results : [],
   })
@@ -498,7 +509,7 @@ async function publicContent(env) {
 
 async function adminDashboard(request, env) {
   await requireAdmin(request, env)
-  const [properties, phases, announcements, events, documents, reservations, messages, photos, guests, poolCards,
+  const [properties, phases, announcements, events, documents, reservations, messages, messageReplies, photos, guests, poolCards,
     clubhouse, blackouts] = await env.DB.batch([
     env.DB.prepare(`SELECT properties.id, properties.street_number || ' ' || properties.street_name || ' ' || properties.street_suffix AS address,
       properties.status, hoa_phases.name AS phase FROM properties INNER JOIN hoa_phases ON hoa_phases.id = properties.phase_id
@@ -528,6 +539,8 @@ async function adminDashboard(request, env) {
       properties.street_number || ' ' || properties.street_name || ' ' || properties.street_suffix AS address
       FROM contact_messages LEFT JOIN properties ON properties.id = contact_messages.property_id
       ORDER BY contact_messages.created_at DESC LIMIT 200`),
+    env.DB.prepare(`SELECT id, contact_message_id AS messageId, author_role AS authorRole, body,
+      created_at AS createdAt FROM contact_message_replies ORDER BY created_at`),
     env.DB.prepare(`SELECT id, original_name AS originalName, mime_type AS mimeType, file_size AS fileSize,
       width, height, alt_text AS altText, caption, sort_order AS sortOrder, status, created_at AS createdAt
       FROM gallery_photos ORDER BY sort_order, created_at`),
@@ -555,9 +568,15 @@ async function adminDashboard(request, env) {
     env.DB.prepare(`SELECT id, title, starts_at AS startsAt, ends_at AS endsAt, notes,
       created_at AS createdAt FROM clubhouse_blackouts ORDER BY starts_at DESC LIMIT 200`),
   ])
+  const repliesByMessage = messageReplies.results.reduce((result, reply) => {
+    if (!result[reply.messageId]) result[reply.messageId] = []
+    result[reply.messageId].push(reply)
+    return result
+  }, {})
   return json({ properties: properties.results, phases: phases.results, announcements: announcements.results,
     events: events.results, documents: documents.results, reservations: reservations.results,
-    messages: messages.results, photos: photos.results, guests: guests.results, poolCards: poolCards.results,
+    messages: messages.results.map((message) => ({ ...message, replies: repliesByMessage[message.id] || [] })),
+    photos: photos.results, guests: guests.results, poolCards: poolCards.results,
     clubhouse: clubhouse.results[0], blackouts: blackouts.results })
 }
 
@@ -817,22 +836,65 @@ async function replyToContactMessage(request, env, id) {
   const message = await env.DB.prepare(`SELECT id, name, email, category, message, user_id AS userId,
     property_id AS propertyId FROM contact_messages WHERE id = ?1`).bind(id).first()
   if (!message) throw new ResponseError('Message not found.', 404)
-  await sendTransactionalEmail(env, [{ email: message.email, name: message.name }],
-    `Re: Your Penny Lane HOA ${message.category} message`,
-    `<p>Hello ${escapeHtml(message.name)},</p><p>${escapeHtml(reply).replace(/\n/g, '<br>')}</p><hr><p><strong>Your original message:</strong></p><p>${escapeHtml(message.message).replace(/\n/g, '<br>')}</p>`,
-    'message-reply', null, false)
+  let emailStatus = 'sent'
+  try {
+    await sendTransactionalEmail(env, [{ email: message.email, name: message.name }],
+      `Re: Your Penny Lane HOA ${message.category} message`,
+      `<p>Hello ${escapeHtml(message.name)},</p><p>${escapeHtml(reply).replace(/\n/g, '<br>')}</p><hr><p><strong>Your original message:</strong></p><p>${escapeHtml(message.message).replace(/\n/g, '<br>')}</p>`,
+      'message-reply', null, false)
+  } catch (error) {
+    emailStatus = 'failed'
+    console.error(JSON.stringify({ message: 'Portal reply email failed', contactId: id, detail: String(error) }))
+  }
+  const replyId = crypto.randomUUID()
   await env.DB.batch([
     env.DB.prepare(`UPDATE contact_messages SET status = 'read', updated_at = CURRENT_TIMESTAMP WHERE id = ?1`).bind(id),
+    env.DB.prepare(`INSERT INTO contact_message_replies (id, contact_message_id, author_user_id, author_role, body, email_status)
+      VALUES (?1, ?2, ?3, 'admin', ?4, ?5)`).bind(replyId, id, admin.id, reply, emailStatus),
     env.DB.prepare(`INSERT INTO communication_log (id, property_id, user_id, direction, channel,
       recipient_or_sender, subject, summary, delivery_status, related_type, related_id)
-      VALUES (?1, ?2, ?3, 'outbound', 'email', ?4, ?5, ?6, 'sent', 'contact_reply', ?7)`)
+      VALUES (?1, ?2, ?3, 'outbound', 'email', ?4, ?5, ?6, ?7, 'contact_reply', ?8)`)
       .bind(crypto.randomUUID(), message.propertyId, message.userId, message.email,
-        `Re: Your Penny Lane HOA ${message.category} message`, reply.slice(0, 500), id),
+        `Re: Your Penny Lane HOA ${message.category} message`, reply.slice(0, 500), emailStatus, id),
     env.DB.prepare(`INSERT INTO audit_log (actor_user_id, action, target_type, target_id, details_json)
       VALUES (?1, 'message.replied', 'contact_message', ?2, ?3)`).bind(admin.id, id,
       JSON.stringify({ email: message.email, propertyId: message.propertyId, reply: reply.slice(0, 500) })),
   ])
-  return json({ status: 'sent' })
+  return json({ id: replyId, status: emailStatus === 'sent' ? 'sent' : 'recorded' })
+}
+
+async function replyToResidentMessage(request, env, id) {
+  const user = await requireUser(request, env)
+  const body = await readJson(request)
+  const reply = cleanText(body.reply, 5000, true)
+  const message = await env.DB.prepare(`SELECT id, category FROM contact_messages
+    WHERE id = ?1 AND user_id = ?2`).bind(id, user.id).first()
+  if (!message) throw new ResponseError('Message not found.', 404)
+  const recent = await env.DB.prepare(`SELECT id FROM contact_message_replies WHERE contact_message_id = ?1
+    AND author_role = 'resident' AND created_at >= datetime('now', '-1 minute') LIMIT 1`).bind(id).first()
+  if (recent) throw new ResponseError('Please wait before sending another reply.', 429)
+  let emailStatus = 'sent'
+  try {
+    await sendTransactionalEmail(env, await activeAdminRecipients(env),
+      `Resident reply: ${message.category} - ${user.firstName} ${user.lastName}`,
+      `<p>A resident replied to a message in the portal.</p><p><strong>From:</strong> ${escapeHtml(`${user.firstName} ${user.lastName}`)} (${escapeHtml(user.email)})<br><strong>Property:</strong> ${escapeHtml(user.address)}<br><strong>Category:</strong> ${escapeHtml(message.category)}</p><p>${escapeHtml(reply).replace(/\n/g, '<br>')}</p><p>The full conversation is stored in the administration dashboard.</p>`,
+      'resident-message-reply', null, false)
+  } catch (error) {
+    emailStatus = 'failed'
+    console.error(JSON.stringify({ message: 'Resident reply notification failed', contactId: id, detail: String(error) }))
+  }
+  const replyId = crypto.randomUUID()
+  await env.DB.batch([
+    env.DB.prepare(`INSERT INTO contact_message_replies (id, contact_message_id, author_user_id, author_role, body, email_status)
+      VALUES (?1, ?2, ?3, 'resident', ?4, ?5)`).bind(replyId, id, user.id, reply, emailStatus),
+    env.DB.prepare(`UPDATE contact_messages SET status = 'new', updated_at = CURRENT_TIMESTAMP WHERE id = ?1`).bind(id),
+    env.DB.prepare(`INSERT INTO communication_log (id, property_id, user_id, direction, channel,
+      recipient_or_sender, subject, summary, delivery_status, related_type, related_id)
+      VALUES (?1, ?2, ?3, 'inbound', 'website', ?4, ?5, ?6, 'recorded', 'contact_reply', ?7)`)
+      .bind(crypto.randomUUID(), user.propertyId, user.id, user.email,
+        `Resident reply: ${message.category}`, reply.slice(0, 500), id),
+  ])
+  return json({ id: replyId, status: 'received' }, { status: 201 })
 }
 
 async function createProperty(request, env) {
@@ -1686,6 +1748,8 @@ async function handleApi(request, env) {
   if (request.method === 'POST' && url.pathname === '/api/auth/logout') return logout(request, env)
   if (request.method === 'GET' && url.pathname === '/api/portal/dashboard') return portalDashboard(request, env)
   if (request.method === 'POST' && url.pathname === '/api/portal/messages') return createResidentMessage(request, env)
+  const portalMessageReplyMatch = url.pathname.match(/^\/api\/portal\/messages\/([^/]+)\/replies$/)
+  if (portalMessageReplyMatch && request.method === 'POST') return replyToResidentMessage(request, env, portalMessageReplyMatch[1])
   if (request.method === 'POST' && url.pathname === '/api/portal/guests') return createGuestRegistration(request, env)
   const guestMatch = url.pathname.match(/^\/api\/portal\/guests\/([^/]+)$/)
   if (guestMatch && request.method === 'DELETE') return revokeGuestRegistration(request, env, guestMatch[1])
