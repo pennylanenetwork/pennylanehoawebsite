@@ -176,6 +176,25 @@ async function sendTransactionalEmail(env, recipients, subject, htmlContent, tag
     console.error(JSON.stringify({ message: 'Brevo rejected transactional email', status: response.status, detail: detail.slice(0, 500), tag }))
     throw new Error('Transactional email could not be sent')
   }
+  await logOutboundCommunications(env, recipients, subject, htmlContent, tag, 'sent')
+}
+
+function emailSummary(htmlContent) {
+  return String(htmlContent || '').replace(/<[^>]*>/g, ' ').replace(/&nbsp;/g, ' ').replace(/\s+/g, ' ').trim().slice(0, 500)
+}
+
+async function logOutboundCommunications(env, recipients, subject, htmlContent, relatedType, deliveryStatus) {
+  if (recipients.length === 0) return
+  const statements = []
+  for (const recipient of recipients) {
+    const user = await env.DB.prepare('SELECT id, property_id AS propertyId FROM users WHERE email = ?1 COLLATE NOCASE').bind(recipient.email).first()
+    if (!user) continue
+    statements.push(env.DB.prepare(`INSERT INTO communication_log (id, property_id, user_id, direction, channel,
+      recipient_or_sender, subject, summary, delivery_status, related_type) VALUES (?1, ?2, ?3, 'outbound',
+      'email', ?4, ?5, ?6, ?7, ?8)`).bind(crypto.randomUUID(), user.propertyId, user.id, recipient.email,
+      subject, emailSummary(htmlContent), deliveryStatus, relatedType))
+  }
+  if (statements.length) await env.DB.batch(statements)
 }
 
 async function sendResidentBroadcast(env, recipients, subject, htmlContent, tag) {
@@ -197,6 +216,7 @@ async function sendResidentBroadcast(env, recipients, subject, htmlContent, tag)
     console.error(JSON.stringify({ message: 'Brevo rejected resident broadcast', status: response.status, detail: detail.slice(0, 500), tag }))
     throw new Error('Resident notification could not be sent')
   }
+  await logOutboundCommunications(env, recipients, subject, htmlContent, tag, 'sent')
 }
 
 async function activeResidentRecipients(env, preferenceColumn) {
@@ -577,8 +597,16 @@ async function createContactMessage(request, env) {
   const id = crypto.randomUUID()
   const ip = request.headers.get('cf-connecting-ip') || ''
   const ipHash = ip ? await sha256(ip) : null
-  await env.DB.prepare(`INSERT INTO contact_messages (id, name, email, phone, category, message, submitted_ip_hash)
-    VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)`).bind(id, name, email, phone, category, message, ipHash).run()
+  const linkedUser = await env.DB.prepare('SELECT id, property_id AS propertyId FROM users WHERE email = ?1 COLLATE NOCASE').bind(email).first()
+  await env.DB.batch([
+    env.DB.prepare(`INSERT INTO contact_messages (id, name, email, phone, category, message, submitted_ip_hash, user_id, property_id)
+      VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9)`).bind(id, name, email, phone, category, message,
+      ipHash, linkedUser?.id || null, linkedUser?.propertyId || null),
+    env.DB.prepare(`INSERT INTO communication_log (id, property_id, user_id, direction, channel, recipient_or_sender,
+      subject, summary, delivery_status, related_type, related_id) VALUES (?1, ?2, ?3, 'inbound', 'website',
+      ?4, ?5, ?6, 'recorded', 'contact', ?7)`).bind(crypto.randomUUID(), linkedUser?.propertyId || null,
+      linkedUser?.id || null, email, `Website contact: ${category}`, message.slice(0, 500), id),
+  ])
   try {
     await sendTransactionalEmail(env, [{ email: 'board@pennylanehoa.net', name: 'Penny Lane HOA Board' }],
       `Website contact: ${category} - ${name}`,
@@ -781,6 +809,41 @@ async function updateProperty(request, env, propertyId) {
   await env.DB.prepare(`INSERT INTO audit_log (actor_user_id, action, target_type, target_id, details_json)
     VALUES (?1, 'property.status_changed', 'property', ?2, ?3)`).bind(admin.id, propertyId, JSON.stringify({ status })).run()
   return json({ status })
+}
+
+async function propertyDetails(request, env, propertyId) {
+  await requireAdmin(request, env)
+  const property = await env.DB.prepare(`SELECT properties.id,
+    properties.street_number || ' ' || properties.street_name || ' ' || properties.street_suffix AS address,
+    properties.city, properties.state, properties.postal_code AS postalCode, properties.status,
+    hoa_phases.name AS phase, properties.created_at AS createdAt
+    FROM properties INNER JOIN hoa_phases ON hoa_phases.id = properties.phase_id WHERE properties.id = ?1`)
+    .bind(propertyId).first()
+  if (!property) throw new ResponseError('Property not found.', 404)
+  const [residents, reservations, contacts, communications, audit] = await env.DB.batch([
+    env.DB.prepare(`SELECT id, first_name AS firstName, last_name AS lastName, email, phone, resident_type AS residentType,
+      role, status, created_at AS createdAt, last_login_at AS lastLoginAt FROM users WHERE property_id = ?1
+      ORDER BY CASE resident_type WHEN 'owner' THEN 0 WHEN 'tenant' THEN 1 ELSE 2 END, last_name, first_name`).bind(propertyId),
+    env.DB.prepare(`SELECT clubhouse_reservations.id, clubhouse_reservations.event_name AS eventName,
+      clubhouse_reservations.starts_at AS startsAt, clubhouse_reservations.ends_at AS endsAt,
+      clubhouse_reservations.status, users.first_name || ' ' || users.last_name AS residentName
+      FROM clubhouse_reservations INNER JOIN users ON users.id = clubhouse_reservations.user_id
+      WHERE users.property_id = ?1 ORDER BY clubhouse_reservations.starts_at DESC LIMIT 100`).bind(propertyId),
+    env.DB.prepare(`SELECT id, name, email, category, message, status, created_at AS createdAt
+      FROM contact_messages WHERE property_id = ?1 ORDER BY created_at DESC LIMIT 100`).bind(propertyId),
+    env.DB.prepare(`SELECT id, user_id AS userId, direction, channel, recipient_or_sender AS correspondent,
+      subject, summary, delivery_status AS deliveryStatus, related_type AS relatedType, created_at AS createdAt
+      FROM communication_log WHERE property_id = ?1 ORDER BY created_at DESC LIMIT 200`).bind(propertyId),
+    env.DB.prepare(`SELECT audit_log.id, audit_log.action, audit_log.target_type AS targetType,
+      audit_log.target_id AS targetId, audit_log.details_json AS detailsJson, audit_log.created_at AS createdAt,
+      actor.first_name || ' ' || actor.last_name AS actorName FROM audit_log
+      LEFT JOIN users AS actor ON actor.id = audit_log.actor_user_id
+      WHERE (audit_log.target_type = 'property' AND audit_log.target_id = CAST(?1 AS TEXT))
+        OR (audit_log.target_type = 'user' AND audit_log.target_id IN (SELECT id FROM users WHERE property_id = ?1))
+      ORDER BY audit_log.created_at DESC LIMIT 100`).bind(propertyId),
+  ])
+  return json({ property, residents: residents.results, reservations: reservations.results,
+    contacts: contacts.results, communications: communications.results, audit: audit.results })
 }
 
 async function updateAnnouncement(request, env, id) {
@@ -1205,6 +1268,7 @@ async function handleApi(request, env) {
   const adminGalleryImageMatch = url.pathname.match(/^\/api\/admin\/gallery\/([^/]+)\/image$/)
   if (adminGalleryImageMatch && request.method === 'GET') return adminGalleryImage(request, env, adminGalleryImageMatch[1])
   const propertyMatch = url.pathname.match(/^\/api\/admin\/properties\/([^/]+)$/)
+  if (propertyMatch && request.method === 'GET') return propertyDetails(request, env, propertyMatch[1])
   if (propertyMatch && request.method === 'PATCH') return updateProperty(request, env, propertyMatch[1])
   const announcementMatch = url.pathname.match(/^\/api\/admin\/announcements\/([^/]+)$/)
   if (announcementMatch && request.method === 'PATCH') return updateAnnouncement(request, env, announcementMatch[1])

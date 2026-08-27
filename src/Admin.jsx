@@ -46,6 +46,7 @@ export default function Admin() {
   const [documentFile, setDocumentFile] = useState(null)
   const [error, setError] = useState('')
   const [notice, setNotice] = useState('')
+  const [selectedProperty, setSelectedProperty] = useState(null)
 
   async function load() {
     const [{ user: currentUser }, { users }, dashboard] = await Promise.all([
@@ -231,11 +232,12 @@ export default function Admin() {
 
       {tab === 'accounts' && <section><div className="account-tools"><p>{accounts.length} resident accounts</p><a className="quiet-button" href="/api/admin/users.csv">Download CSV</a></div><div className="resident-admin-list">{accounts.map((account) => <AccountReview key={account.id} account={account} currentUser={user} properties={data.properties} onStatus={updateAccount} onSave={updateAccountProfile} />)}</div></section>}
 
-      {tab === 'properties' && <Workspace title="Add property" form={<form onSubmit={(event) => submit('property', 'properties', event)}>
+      {tab === 'properties' && selectedProperty && <PropertyDetail propertyId={selectedProperty} onBack={() => setSelectedProperty(null)} />}
+      {tab === 'properties' && !selectedProperty && <Workspace title="Add property" form={<form onSubmit={(event) => submit('property', 'properties', event)}>
         <label>Street address<input required placeholder="800 Abbey Rd" value={forms.property.address} onChange={(event) => updateForm('property', 'address', event.target.value)} /></label>
         <label>Phase<input required value={forms.property.phaseName} onChange={(event) => updateForm('property', 'phaseName', event.target.value)} /></label>
         <button className="primary-button">Add property</button>
-      </form>} rows={data.properties.map((item) => <DataRow key={item.id} title={item.address} detail={item.phase} meta={item.status} actions={<select aria-label={`Status for ${item.address}`} value={item.status} onChange={(event) => setPropertyStatus(item.id, event.target.value)}><option value="active">Active</option><option value="planned">Planned</option><option value="inactive">Inactive</option></select>} />)} />}
+      </form>} rows={data.properties.map((item) => <DataRow key={item.id} title={item.address} detail={item.phase} meta={item.status} onOpen={() => setSelectedProperty(item.id)} actions={<select aria-label={`Status for ${item.address}`} value={item.status} onChange={(event) => setPropertyStatus(item.id, event.target.value)}><option value="active">Active</option><option value="planned">Planned</option><option value="inactive">Inactive</option></select>} />)} />}
 
       {tab === 'announcements' && <Workspace title={editing?.kind === 'announcement' ? 'Edit announcement' : 'Post announcement'} form={<form onSubmit={(event) => submit('announcement', 'announcements', event)}>
         <label>Title<input required value={forms.announcement.title} onChange={(event) => updateForm('announcement', 'title', event.target.value)} /></label>
@@ -289,8 +291,8 @@ function RowActions({ onEdit, onDelete, deleteLabel = 'Delete' }) {
   return <div className="row-actions"><button type="button" onClick={onEdit}>Edit</button><button type="button" className="row-delete" onClick={onDelete}>{deleteLabel}</button></div>
 }
 
-function DataRow({ title, detail, meta, actions }) {
-  return <div className="data-row"><div><strong>{title}</strong><small>{detail}</small></div><span>{meta}</span>{actions}</div>
+function DataRow({ title, detail, meta, actions, onOpen }) {
+  return <div className="data-row"><div>{onOpen ? <button type="button" className="row-title-button" onClick={onOpen}>{title}</button> : <strong>{title}</strong>}<small>{detail}</small></div><span>{meta}</span>{actions}</div>
 }
 
 function ReservationReview({ item, onDecide, onCancel }) {
@@ -346,4 +348,18 @@ function PhotoManager({ photos, onUpload, onUpdate, onDelete }) {
 function PhotoEditor({ photo, canMoveUp, canMoveDown, onMoveUp, onMoveDown, onUpdate, onDelete }) {
   const [form, setForm] = useState({ altText: photo.altText, caption: photo.caption || '', status: photo.status, sortOrder: photo.sortOrder })
   return <article className="photo-editor"><img src={`/api/admin/gallery/${photo.id}/image`} alt={photo.altText} /><div><label>Alternative text<input maxLength="300" value={form.altText} onChange={(event) => setForm({ ...form, altText: event.target.value })} /></label><label>Caption<textarea maxLength="500" value={form.caption} onChange={(event) => setForm({ ...form, caption: event.target.value })} /></label><div className="photo-actions"><button type="button" title="Move photo earlier" disabled={!canMoveUp} onClick={onMoveUp}>&uarr;</button><button type="button" title="Move photo later" disabled={!canMoveDown} onClick={onMoveDown}>&darr;</button><select aria-label="Photo visibility" value={form.status} onChange={(event) => setForm({ ...form, status: event.target.value })}><option value="active">Visible</option><option value="hidden">Hidden</option></select><button type="button" onClick={() => onUpdate(photo.id, { ...form, sortOrder: photo.sortOrder })}>Save</button><button type="button" className="row-delete" onClick={onDelete}>Delete</button></div></div></article>
+}
+
+function PropertyDetail({ propertyId, onBack }) {
+  const [record, setRecord] = useState(null)
+  const [error, setError] = useState('')
+  useEffect(() => { api(`/api/admin/properties/${propertyId}`).then(setRecord).catch((requestError) => setError(requestError.message)) }, [propertyId])
+  if (error) return <div><button type="button" className="quiet-button" onClick={onBack}>&larr; Properties</button><p className="form-error">{error}</p></div>
+  if (!record) return <p className="empty-state">Loading property record...</p>
+  const { property, residents, reservations, contacts, communications, audit } = record
+  return <section className="property-detail"><header><button type="button" className="quiet-button" onClick={onBack}>&larr; Properties</button><div><p className="portal-kicker">Property record</p><h2>{property.address}</h2><p>{property.phase} | {property.city}, {property.state} {property.postalCode} | {property.status}</p></div></header><div className="property-summary"><span><strong>{residents.length}</strong> registered accounts</span><span><strong>{reservations.length}</strong> reservations</span><span><strong>{communications.length}</strong> communications</span></div><PropertySection title="Registered residents" empty="No accounts are linked to this property.">{residents.map((resident) => <article className="property-resident" key={resident.id}><div><strong>{resident.firstName} {resident.lastName}</strong><small>{resident.email}{resident.phone ? ` | ${resident.phone}` : ''}</small></div><div><span>{resident.residentType.replace('_', ' ')}</span><span>{resident.role}</span><span>{resident.status}</span></div></article>)}</PropertySection><PropertySection title="Communications" empty="No communications are linked to this property.">{communications.map((item) => <article className="communication-record" key={item.id}><header><span>{item.direction} {item.channel}</span><time>{dateTime(item.createdAt)}</time></header><strong>{item.subject}</strong><small>{item.correspondent} | {item.deliveryStatus}</small>{item.summary && <p>{item.summary}</p>}</article>)}</PropertySection><PropertySection title="Website messages" empty="No website messages are linked to this property.">{contacts.map((item) => <article className="communication-record" key={item.id}><header><span>{item.category}</span><time>{dateTime(item.createdAt)}</time></header><strong>{item.name} | {item.status}</strong><p>{item.message}</p></article>)}</PropertySection><PropertySection title="Clubhouse reservations" empty="No clubhouse reservations are linked to this property.">{reservations.map((item) => <article className="property-list-row" key={item.id}><div><strong>{item.eventName}</strong><small>{item.residentName} | {dateTime(item.startsAt)}</small></div><span className={`status status-${item.status}`}>{item.status}</span></article>)}</PropertySection><PropertySection title="Record activity" empty="No recorded changes for this property.">{audit.map((item) => <article className="property-list-row" key={item.id}><div><strong>{item.action.replaceAll('.', ' ')}</strong><small>{item.actorName || 'System'} | {dateTime(item.createdAt)}</small></div><span>{item.targetType}</span></article>)}</PropertySection></section>
+}
+
+function PropertySection({ title, empty, children }) {
+  return <section className="property-section"><h3>{title}</h3>{children.length ? children : <p className="empty-state">{empty}</p>}</section>
 }
