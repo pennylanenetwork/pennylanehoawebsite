@@ -39,7 +39,7 @@ export default function Admin() {
   const [tab, setTab] = useState('accounts')
   const [user, setUser] = useState(null)
   const [accounts, setAccounts] = useState([])
-  const [data, setData] = useState({ properties: [], announcements: [], events: [], documents: [], reservations: [], messages: [], photos: [] })
+  const [data, setData] = useState({ properties: [], announcements: [], events: [], documents: [], reservations: [], messages: [], photos: [], guests: [], poolCards: [] })
   const [forms, setForms] = useState(emptyForms)
   const [editing, setEditing] = useState(null)
   const [documentMode, setDocumentMode] = useState('upload')
@@ -226,7 +226,7 @@ export default function Admin() {
     } catch (requestError) { setError(requestError.message) }
   }
 
-  const tabs = ['accounts', 'properties', 'announcements', 'events', 'documents', 'photos', 'reservations', 'messages']
+  const tabs = ['accounts', 'properties', 'access', 'announcements', 'events', 'documents', 'photos', 'reservations', 'messages']
 
   return <div className="portal-shell admin-shell">
     <header className="portal-header">
@@ -249,6 +249,8 @@ export default function Admin() {
         <label>Phase<input required value={forms.property.phaseName} onChange={(event) => updateForm('property', 'phaseName', event.target.value)} /></label>
         <button className="primary-button">Add property</button>
       </form>} rows={data.properties.map((item) => <DataRow key={item.id} title={item.address} detail={item.phase} meta={item.status} onOpen={() => setSelectedProperty(item.id)} actions={<select aria-label={`Status for ${item.address}`} value={item.status} onChange={(event) => setPropertyStatus(item.id, event.target.value)}><option value="active">Active</option><option value="planned">Planned</option><option value="inactive">Inactive</option></select>} />)} />}
+
+      {tab === 'access' && <AccessWorkspace guests={data.guests} poolCards={data.poolCards} />}
 
       {tab === 'announcements' && <Workspace title={editing?.kind === 'announcement' ? 'Edit announcement' : 'Post announcement'} form={<form onSubmit={(event) => submit('announcement', 'announcements', event)}>
         <label>Title<input required value={forms.announcement.title} onChange={(event) => updateForm('announcement', 'title', event.target.value)} /></label>
@@ -284,6 +286,23 @@ export default function Admin() {
       {tab === 'messages' && <div className="message-admin-list">{data.messages.map((item) => <MessageReview key={item.id} item={item} onUpdate={updateMessage} onReply={replyToMessage} />)}{data.messages.length === 0 && <p className="empty-state">No contact messages yet.</p>}</div>}
     </main>
   </div>
+}
+
+function AccessWorkspace({ guests, poolCards }) {
+  const [view, setView] = useState('guests')
+  const [query, setQuery] = useState('')
+  const [status, setStatus] = useState('all')
+  const [today] = useState(() => new Date().toISOString().slice(0, 10))
+  const [weekFromToday] = useState(() => new Date(Date.now() + 7 * 86400000).toISOString().slice(0, 10))
+  const source = view === 'guests' ? guests : poolCards
+  const filtered = source.filter((item) => {
+    const haystack = Object.values(item).join(' ').toLowerCase()
+    const endingSoon = view === 'guests' && item.status === 'active' && item.endsOn >= today && item.endsOn <= weekFromToday
+    return (status === 'all' || item.status === status || status === 'Ending within 7 days' && endingSoon)
+      && haystack.includes(query.trim().toLowerCase())
+  })
+  const statuses = view === 'guests' ? ['active', 'Ending within 7 days', 'expired', 'revoked'] : ['active', 'lost', 'stolen', 'returned', 'deactivated']
+  return <section className="access-workspace"><header><div className="calendar-modes"><button type="button" className={view === 'guests' ? 'active' : ''} onClick={() => { setView('guests'); setStatus('all') }}>Guests</button><button type="button" className={view === 'cards' ? 'active' : ''} onClick={() => { setView('cards'); setStatus('all') }}>Pool cards</button></div><div className="access-actions"><a className="quiet-button" href={view === 'guests' ? '/api/admin/guests.csv' : '/api/admin/pool-cards.csv'}>Download CSV</a></div></header><div className="access-filters"><label>Search<input type="search" placeholder={view === 'guests' ? 'Guest, resident, or property' : 'Card ID, resident, or property'} value={query} onChange={(event) => setQuery(event.target.value)} /></label><label>Status<select value={status} onChange={(event) => setStatus(event.target.value)}><option value="all">All statuses</option>{statuses.map((item) => <option value={item} key={item}>{item}</option>)}</select></label><span>{filtered.length} records</span></div><div className="access-list">{view === 'guests' ? filtered.map((item) => <article className="access-row" key={item.id}><div><strong>{item.guestName}</strong><small>{item.address} | Registered by {item.registeredByName}</small></div><div><small>{item.startsOn} through {item.endsOn}</small><span className={`status status-${item.status}`}>{item.status}</span></div></article>) : filtered.map((item) => <article className="access-row" key={item.id}><div><strong>{item.cardNumber}</strong><small>{item.address}{item.assignedName ? ` | ${item.assignedName}` : ' | Property card'}</small></div><div><small>{item.notes || `Issued ${dateTime(item.issuedAt)}`}</small><span className={`status status-${item.status}`}>{item.status}</span></div></article>)}{filtered.length === 0 && <p className="empty-state">No matching records.</p>}</div></section>
 }
 
 function Audience({ value, onChange }) {

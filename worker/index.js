@@ -410,7 +410,7 @@ function validDateRange(startsAtValue, endsAtValue, requireFuture = false) {
 
 async function portalDashboard(request, env) {
   const user = await requireUser(request, env)
-  const [announcements, events, documents, reservations, messages, guests] = await env.DB.batch([
+  const [announcements, events, documents, reservations, messages, guests, household] = await env.DB.batch([
     env.DB.prepare(`SELECT id, title, body, audience, published_at AS publishedAt FROM announcements
       WHERE published_at <= CURRENT_TIMESTAMP ORDER BY published_at DESC LIMIT 20`),
     env.DB.prepare(`SELECT id, title, description, starts_at AS startsAt, ends_at AS endsAt,
@@ -428,6 +428,9 @@ async function portalDashboard(request, env) {
       CASE WHEN status = 'active' AND ends_on < date('now') THEN 'expired' ELSE status END AS status,
       created_at AS createdAt
       FROM guest_registrations WHERE registered_by = ?1 ORDER BY created_at DESC LIMIT 100`).bind(user.id),
+    env.DB.prepare(`SELECT id, first_name AS firstName, last_name AS lastName, email, phone, status,
+      created_at AS createdAt FROM users WHERE property_id = ?1 AND resident_type = 'household_member'
+      ORDER BY created_at DESC`).bind(user.propertyId),
   ])
   return json({
     announcements: announcements.results,
@@ -436,6 +439,7 @@ async function portalDashboard(request, env) {
     reservations: reservations.results,
     messages: messages.results,
     guests: guests.results,
+    household: user.residentType === 'owner' ? household.results : [],
   })
 }
 
@@ -453,7 +457,7 @@ async function publicContent(env) {
 
 async function adminDashboard(request, env) {
   await requireAdmin(request, env)
-  const [properties, phases, announcements, events, documents, reservations, messages, photos] = await env.DB.batch([
+  const [properties, phases, announcements, events, documents, reservations, messages, photos, guests, poolCards] = await env.DB.batch([
     env.DB.prepare(`SELECT properties.id, properties.street_number || ' ' || properties.street_name || ' ' || properties.street_suffix AS address,
       properties.status, hoa_phases.name AS phase FROM properties INNER JOIN hoa_phases ON hoa_phases.id = properties.phase_id
       ORDER BY properties.street_name, properties.street_number`),
@@ -484,10 +488,28 @@ async function adminDashboard(request, env) {
     env.DB.prepare(`SELECT id, original_name AS originalName, mime_type AS mimeType, file_size AS fileSize,
       width, height, alt_text AS altText, caption, sort_order AS sortOrder, status, created_at AS createdAt
       FROM gallery_photos ORDER BY sort_order, created_at`),
+    env.DB.prepare(`SELECT guest_registrations.id, guest_registrations.guest_name AS guestName,
+      guest_registrations.starts_on AS startsOn, guest_registrations.ends_on AS endsOn,
+      guest_registrations.pool_responsibility_acknowledged AS poolResponsibilityAcknowledged,
+      CASE WHEN guest_registrations.status = 'active' AND guest_registrations.ends_on < date('now')
+        THEN 'expired' ELSE guest_registrations.status END AS status,
+      guest_registrations.created_at AS createdAt, users.first_name || ' ' || users.last_name AS registeredByName,
+      properties.street_number || ' ' || properties.street_name || ' ' || properties.street_suffix AS address
+      FROM guest_registrations INNER JOIN users ON users.id = guest_registrations.registered_by
+      INNER JOIN properties ON properties.id = guest_registrations.property_id
+      ORDER BY guest_registrations.ends_on DESC, guest_registrations.created_at DESC`),
+    env.DB.prepare(`SELECT pool_access_cards.id, pool_access_cards.card_number AS cardNumber,
+      pool_access_cards.status, pool_access_cards.notes, pool_access_cards.issued_at AS issuedAt,
+      pool_access_cards.updated_at AS updatedAt, assigned.first_name || ' ' || assigned.last_name AS assignedName,
+      properties.street_number || ' ' || properties.street_name || ' ' || properties.street_suffix AS address
+      FROM pool_access_cards INNER JOIN properties ON properties.id = pool_access_cards.property_id
+      LEFT JOIN users AS assigned ON assigned.id = pool_access_cards.assigned_user_id
+      ORDER BY CASE pool_access_cards.status WHEN 'lost' THEN 0 WHEN 'stolen' THEN 1 WHEN 'active' THEN 2 ELSE 3 END,
+      properties.street_name, properties.street_number`),
   ])
   return json({ properties: properties.results, phases: phases.results, announcements: announcements.results,
     events: events.results, documents: documents.results, reservations: reservations.results,
-    messages: messages.results, photos: photos.results })
+    messages: messages.results, photos: photos.results, guests: guests.results, poolCards: poolCards.results })
 }
 
 async function publicGallery(env) {
@@ -1420,6 +1442,44 @@ async function updateNotificationPreferences(request, env) {
   return json({ notifyAnnouncements: announcements, notifyEvents: events })
 }
 
+async function requestHouseholdMember(request, env) {
+  const owner = await requireUser(request, env)
+  if (owner.residentType !== 'owner') throw new ResponseError('Only a verified property owner can request household access.', 403)
+  const body = await readJson(request)
+  const firstName = cleanText(body.firstName, 80, true)
+  const lastName = cleanText(body.lastName, 80, true)
+  const email = cleanText(body.email, 254, true).toLowerCase()
+  const phone = cleanText(body.phone, 30)
+  if (!/^\S+@\S+\.\S+$/.test(email)) throw new ResponseError('Enter a valid email address.', 400)
+  const existing = await env.DB.prepare('SELECT id FROM users WHERE email = ?1 COLLATE NOCASE').bind(email).first()
+  if (existing) throw new ResponseError('An account already exists for that email address.', 409)
+  const householdCount = await env.DB.prepare(`SELECT COUNT(*) AS count FROM users WHERE property_id = ?1
+    AND resident_type = 'household_member' AND status IN ('pending', 'active')`).bind(owner.propertyId).first('count')
+  if (householdCount >= 10) throw new ResponseError('This property already has the maximum number of household accounts.', 409)
+  const id = crypto.randomUUID()
+  try {
+    await env.DB.batch([
+      env.DB.prepare(`INSERT INTO users (id, property_id, email, first_name, last_name, phone, resident_type,
+        password_hash, password_salt, password_iterations) VALUES (?1, ?2, ?3, ?4, ?5, ?6,
+        'household_member', '', '', 0)`).bind(id, owner.propertyId, email, firstName, lastName, phone),
+      env.DB.prepare(`INSERT INTO audit_log (actor_user_id, action, target_type, target_id, details_json)
+        VALUES (?1, 'household.access_requested', 'user', ?2, ?3)`).bind(owner.id, id,
+        JSON.stringify({ propertyId: owner.propertyId, requestedBy: owner.id })),
+    ])
+  } catch (error) {
+    if (String(error).includes('UNIQUE')) throw new ResponseError('An account already exists for that email address.', 409)
+    throw error
+  }
+  try {
+    await sendTransactionalEmail(env, await activeAdminRecipients(env), `Household access request for ${firstName} ${lastName}`,
+      `<p>A property owner requested a household-member account.</p><p><strong>Household member:</strong> ${escapeHtml(`${firstName} ${lastName}`)}<br><strong>Email:</strong> ${escapeHtml(email)}<br><strong>Property:</strong> ${escapeHtml(owner.address)}<br><strong>Requested by:</strong> ${escapeHtml(`${owner.firstName} ${owner.lastName}`)}</p><p>Review the pending account in the administration dashboard.</p>`,
+      'household-access-request', null, false)
+  } catch (error) {
+    console.error(JSON.stringify({ message: 'Household access notification failed', userId: id, detail: String(error) }))
+  }
+  return json({ id, status: 'pending' }, { status: 201 })
+}
+
 function csvCell(value) {
   return `"${String(value ?? '').replace(/"/g, '""')}"`
 }
@@ -1439,6 +1499,46 @@ async function exportResidentsCsv(request, env) {
     'content-type': 'text/csv; charset=utf-8',
     'x-content-type-options': 'nosniff',
   } })
+}
+
+function csvResponse(rows, filename) {
+  return new Response(rows.map((row) => row.map(csvCell).join(',')).join('\r\n'), { headers: {
+    'cache-control': 'private, no-store',
+    'content-disposition': `attachment; filename="${filename}"`,
+    'content-type': 'text/csv; charset=utf-8',
+    'x-content-type-options': 'nosniff',
+  } })
+}
+
+async function exportGuestsCsv(request, env) {
+  await requireAdmin(request, env)
+  const result = await env.DB.prepare(`SELECT guest_registrations.guest_name AS guestName,
+    guest_registrations.starts_on AS startsOn, guest_registrations.ends_on AS endsOn,
+    guest_registrations.pool_responsibility_acknowledged AS poolResponsibilityAcknowledged,
+    CASE WHEN guest_registrations.status = 'active' AND guest_registrations.ends_on < date('now')
+      THEN 'expired' ELSE guest_registrations.status END AS status,
+    guest_registrations.created_at AS createdAt, users.first_name || ' ' || users.last_name AS registeredBy,
+    properties.street_number || ' ' || properties.street_name || ' ' || properties.street_suffix AS address
+    FROM guest_registrations INNER JOIN users ON users.id = guest_registrations.registered_by
+    INNER JOIN properties ON properties.id = guest_registrations.property_id
+    ORDER BY guest_registrations.ends_on DESC`).all()
+  return csvResponse([['Guest', 'Property', 'Registered by', 'Arrival', 'Departure', 'Status', 'Pool responsibility acknowledged', 'Registered'],
+    ...result.results.map((item) => [item.guestName, item.address, item.registeredBy, item.startsOn,
+      item.endsOn, item.status, item.poolResponsibilityAcknowledged ? 'Yes' : 'No', item.createdAt])], 'penny-lane-guests.csv')
+}
+
+async function exportPoolCardsCsv(request, env) {
+  await requireAdmin(request, env)
+  const result = await env.DB.prepare(`SELECT pool_access_cards.card_number AS cardNumber,
+    pool_access_cards.status, pool_access_cards.notes, pool_access_cards.issued_at AS issuedAt,
+    pool_access_cards.updated_at AS updatedAt, assigned.first_name || ' ' || assigned.last_name AS assignedName,
+    properties.street_number || ' ' || properties.street_name || ' ' || properties.street_suffix AS address
+    FROM pool_access_cards INNER JOIN properties ON properties.id = pool_access_cards.property_id
+    LEFT JOIN users AS assigned ON assigned.id = pool_access_cards.assigned_user_id
+    ORDER BY properties.street_name, properties.street_number`).all()
+  return csvResponse([['Card ID', 'Property', 'Assigned resident', 'Status', 'Notes', 'Issued', 'Last updated'],
+    ...result.results.map((item) => [item.cardNumber, item.address, item.assignedName, item.status,
+      item.notes, item.issuedAt, item.updatedAt])], 'penny-lane-pool-cards.csv')
 }
 
 async function handleApi(request, env) {
@@ -1472,11 +1572,14 @@ async function handleApi(request, env) {
   const guestMatch = url.pathname.match(/^\/api\/portal\/guests\/([^/]+)$/)
   if (guestMatch && request.method === 'DELETE') return revokeGuestRegistration(request, env, guestMatch[1])
   if (request.method === 'PATCH' && url.pathname === '/api/portal/preferences') return updateNotificationPreferences(request, env)
+  if (request.method === 'POST' && url.pathname === '/api/portal/household') return requestHouseholdMember(request, env)
   if (request.method === 'POST' && url.pathname === '/api/portal/reservations') return createReservation(request, env)
   const reservationMatch = url.pathname.match(/^\/api\/portal\/reservations\/([^/]+)$/)
   if (request.method === 'DELETE' && reservationMatch) return cancelReservation(request, env, reservationMatch[1])
   if (request.method === 'GET' && url.pathname === '/api/admin/users') return listUsers(request, env)
   if (request.method === 'GET' && url.pathname === '/api/admin/users.csv') return exportResidentsCsv(request, env)
+  if (request.method === 'GET' && url.pathname === '/api/admin/guests.csv') return exportGuestsCsv(request, env)
+  if (request.method === 'GET' && url.pathname === '/api/admin/pool-cards.csv') return exportPoolCardsCsv(request, env)
   if (request.method === 'GET' && url.pathname === '/api/admin/dashboard') return adminDashboard(request, env)
   if (request.method === 'POST' && url.pathname === '/api/admin/properties') return createProperty(request, env)
   if (request.method === 'POST' && url.pathname === '/api/admin/announcements') return createAnnouncement(request, env)
