@@ -1643,7 +1643,7 @@ async function updateUserProfile(request, env, targetId) {
   const email = cleanText(body.email, 254, true).toLowerCase()
   if (!/^\S+@\S+\.\S+$/.test(email)) throw new ResponseError('Enter a valid email address.', 400)
   const role = ['resident', 'admin', 'super_admin'].includes(body.role) ? body.role : 'resident'
-  if (role === 'super_admin' && admin.role !== 'super_admin') throw new ResponseError('Super administrator access required.', 403)
+  if (role !== target.role && admin.role !== 'super_admin') throw new ResponseError('Super administrator access required to change account roles.', 403)
   if (targetId === admin.id && role !== admin.role) throw new ResponseError('You cannot change your own role.', 400)
   const residentType = ['owner', 'tenant', 'household_member'].includes(body.residentType) ? body.residentType : 'owner'
   const propertyId = Number(body.propertyId)

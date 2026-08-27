@@ -63,14 +63,14 @@ export function TurnstileWidget({ onToken, resetKey }) {
   return <div className="turnstile-slot" ref={container} data-action="turnstile-spin-v1" />
 }
 
-function PortalHeader() {
+function PortalHeader({ user }) {
   return (
     <header className="portal-header">
       <a className="brand" href="/" aria-label="Penny Lane HOA home">
         <span className="brand-mark">PL</span>
         <span>Penny Lane <em>HOA</em></span>
       </a>
-      <a className="portal-back" href="/">Back to community site</a>
+      {user?.role !== 'resident' ? <nav className="portal-view-nav" aria-label="Switch portal view"><a className="active" href="/portal">Resident portal</a><a href="/admin">Administration</a></nav> : <a className="portal-back" href="/">Back to community site</a>}
     </header>
   )
 }
@@ -195,8 +195,8 @@ function ResidentHome({ user, onLogout }) {
   const tabs = ['overview', 'calendar', 'documents', 'reserve', 'guests', 'messages', ...(user.residentType === 'owner' ? ['household'] : []), 'settings']
   const dateTime = (value) => new Intl.DateTimeFormat('en-US', { dateStyle: 'medium', timeStyle: 'short' }).format(new Date(value))
   const dateOnly = (value) => new Intl.DateTimeFormat('en-US', { dateStyle: 'medium', timeZone: 'UTC' }).format(new Date(`${value}T12:00:00Z`))
-  return <div className="portal-shell"><PortalHeader /><main className="resident-dashboard">
-    <header className="dashboard-heading"><div><p className="portal-kicker">Resident portal</p><h1>Welcome, {user.firstName}.</h1><p className="portal-lead">{user.address}, Lindale, TX 75771</p></div><div className="dashboard-actions">{user.role !== 'resident' && <a className="primary-button" href="/admin">Administration</a>}<button type="button" className="secondary-button" onClick={onLogout}>Sign out</button></div></header>
+  return <div className="portal-shell"><PortalHeader user={user} /><main className="resident-dashboard">
+    <header className="dashboard-heading"><div><p className="portal-kicker">Resident portal</p><h1>Welcome, {user.firstName}.</h1><p className="portal-lead">{user.address}, Lindale, TX 75771</p></div><div className="dashboard-actions"><button type="button" className="secondary-button" onClick={onLogout}>Sign out</button></div></header>
     <nav className="workspace-tabs" aria-label="Resident portal sections">{tabs.map((item) => <button type="button" key={item} className={tab === item ? 'active' : ''} onClick={() => { setTab(item); setError(''); setNotice('') }}>{item}</button>)}</nav>
     {notice && <p className="form-notice" role="status">{notice}</p>}{error && <p className="form-error" role="alert">{error}</p>}
     {tab === 'overview' && <div className="dashboard-columns"><section><h2>Announcements</h2>{data.announcements.map((item) => <article className="announcement" key={item.id}><small>{dateTime(item.publishedAt)}</small><h3>{item.title}</h3><p>{item.body}</p></article>)}{data.announcements.length === 0 && <p className="empty-state">No member announcements yet.</p>}</section><section><h2>Coming up</h2>{data.events.slice(0, 5).map((item) => <div className="data-row" key={item.id}><div><strong>{item.title}</strong><small>{dateTime(item.startsAt)}</small></div><span>{item.eventType}</span></div>)}{data.events.length === 0 && <p className="empty-state">No upcoming events.</p>}</section></div>}
