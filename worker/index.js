@@ -279,6 +279,182 @@ async function requireAdmin(request, env) {
   return user
 }
 
+async function requireUser(request, env) {
+  const user = await currentUser(request, env)
+  if (!user) throw new ResponseError('Authentication required.', 401)
+  return user
+}
+
+function cleanText(value, maximum, required = false) {
+  const result = String(value || '').trim()
+  if ((required && !result) || result.length > maximum) throw new ResponseError('Check the information you entered.', 400)
+  return result || null
+}
+
+function validDateRange(startsAtValue, endsAtValue, requireFuture = false) {
+  const starts = new Date(startsAtValue)
+  const ends = new Date(endsAtValue)
+  if (!Number.isFinite(starts.getTime()) || !Number.isFinite(ends.getTime()) || ends <= starts) {
+    throw new ResponseError('Enter a valid start and end time.', 400)
+  }
+  if (requireFuture && starts <= new Date()) throw new ResponseError('Reservations must begin in the future.', 400)
+  if (ends.getTime() - starts.getTime() > 12 * 60 * 60 * 1000) throw new ResponseError('An event cannot exceed 12 hours.', 400)
+  return { startsAt: starts.toISOString(), endsAt: ends.toISOString() }
+}
+
+async function portalDashboard(request, env) {
+  const user = await requireUser(request, env)
+  const [announcements, events, documents, reservations] = await env.DB.batch([
+    env.DB.prepare(`SELECT id, title, body, audience, published_at AS publishedAt FROM announcements
+      WHERE published_at <= CURRENT_TIMESTAMP ORDER BY published_at DESC LIMIT 20`),
+    env.DB.prepare(`SELECT id, title, description, starts_at AS startsAt, ends_at AS endsAt,
+      audience, event_type AS eventType FROM events WHERE status = 'scheduled' AND ends_at >= CURRENT_TIMESTAMP ORDER BY starts_at LIMIT 50`),
+    env.DB.prepare(`SELECT id, title, description, document_url AS url, category, audience
+      FROM documents ORDER BY category, title`),
+    env.DB.prepare(`SELECT id, event_name AS eventName, starts_at AS startsAt, ends_at AS endsAt,
+      attendee_count AS attendeeCount, status, deposit_status AS depositStatus
+      FROM clubhouse_reservations WHERE user_id = ?1 ORDER BY starts_at DESC`).bind(user.id),
+  ])
+  return json({
+    announcements: announcements.results,
+    events: events.results,
+    documents: documents.results,
+    reservations: reservations.results,
+  })
+}
+
+async function publicContent(env) {
+  const [announcements, events, documents] = await env.DB.batch([
+    env.DB.prepare(`SELECT id, title, body, published_at AS publishedAt FROM announcements
+      WHERE audience = 'public' AND published_at <= CURRENT_TIMESTAMP ORDER BY published_at DESC LIMIT 10`),
+    env.DB.prepare(`SELECT id, title, description, starts_at AS startsAt, ends_at AS endsAt, event_type AS eventType
+      FROM events WHERE audience = 'public' AND status = 'scheduled' AND ends_at >= CURRENT_TIMESTAMP ORDER BY starts_at LIMIT 20`),
+    env.DB.prepare(`SELECT id, title, description, document_url AS url, category FROM documents
+      WHERE audience = 'public' ORDER BY category, title`),
+  ])
+  return json({ announcements: announcements.results, events: events.results, documents: documents.results })
+}
+
+async function adminDashboard(request, env) {
+  await requireAdmin(request, env)
+  const [properties, phases, announcements, events, documents, reservations] = await env.DB.batch([
+    env.DB.prepare(`SELECT properties.id, properties.street_number || ' ' || properties.street_name || ' ' || properties.street_suffix AS address,
+      properties.status, hoa_phases.name AS phase FROM properties INNER JOIN hoa_phases ON hoa_phases.id = properties.phase_id
+      ORDER BY properties.street_name, properties.street_number`),
+    env.DB.prepare('SELECT id, name, status FROM hoa_phases ORDER BY id'),
+    env.DB.prepare('SELECT id, title, audience, published_at AS publishedAt FROM announcements ORDER BY published_at DESC'),
+    env.DB.prepare(`SELECT id, title, starts_at AS startsAt, ends_at AS endsAt, audience, event_type AS eventType
+      FROM events ORDER BY starts_at DESC LIMIT 100`),
+    env.DB.prepare('SELECT id, title, category, audience, document_url AS url FROM documents ORDER BY category, title'),
+    env.DB.prepare(`SELECT clubhouse_reservations.id, clubhouse_reservations.event_name AS eventName,
+      clubhouse_reservations.starts_at AS startsAt, clubhouse_reservations.ends_at AS endsAt,
+      clubhouse_reservations.attendee_count AS attendeeCount, clubhouse_reservations.status,
+      users.first_name || ' ' || users.last_name AS residentName
+      FROM clubhouse_reservations INNER JOIN users ON users.id = clubhouse_reservations.user_id
+      ORDER BY clubhouse_reservations.starts_at DESC LIMIT 100`),
+  ])
+  return json({ properties: properties.results, phases: phases.results, announcements: announcements.results,
+    events: events.results, documents: documents.results, reservations: reservations.results })
+}
+
+async function createProperty(request, env) {
+  const admin = await requireAdmin(request, env)
+  const body = await readJson(request)
+  const normalized = normalizeAddress(cleanText(body.address, 160, true))
+  const match = normalized.match(/^(\d{1,6}) ([A-Z0-9 ]+) (RD|DR)$/)
+  if (!match) throw new ResponseError('Enter an address such as 800 Abbey Rd.', 400)
+  const phaseName = cleanText(body.phaseName || 'New Development', 80, true)
+  let phase = await env.DB.prepare('SELECT id FROM hoa_phases WHERE name = ?1 COLLATE NOCASE').bind(phaseName).first()
+  if (!phase) {
+    const slug = `${phaseName.toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-|-$/g, '')}-${Date.now()}`
+    const result = await env.DB.prepare("INSERT INTO hoa_phases (name, slug, status) VALUES (?1, ?2, 'active')").bind(phaseName, slug).run()
+    phase = { id: result.meta.last_row_id }
+  }
+  try {
+    const result = await env.DB.prepare(`INSERT INTO properties (phase_id, street_number, street_name, street_suffix)
+      VALUES (?1, ?2, ?3, ?4)`).bind(phase.id, Number(match[1]), match[2].split(' ').map((part) => part[0] + part.slice(1).toLowerCase()).join(' '), match[3] === 'RD' ? 'Rd' : 'Dr').run()
+    await env.DB.prepare(`INSERT INTO audit_log (actor_user_id, action, target_type, target_id)
+      VALUES (?1, 'property.created', 'property', ?2)`).bind(admin.id, String(result.meta.last_row_id)).run()
+    return json({ status: 'created' }, { status: 201 })
+  } catch (error) {
+    if (String(error).includes('UNIQUE')) throw new ResponseError('That property already exists.', 409)
+    throw error
+  }
+}
+
+async function createAnnouncement(request, env) {
+  const admin = await requireAdmin(request, env)
+  const body = await readJson(request)
+  const audience = ['public', 'members'].includes(body.audience) ? body.audience : 'members'
+  const id = crypto.randomUUID()
+  await env.DB.prepare(`INSERT INTO announcements (id, title, body, audience, created_by) VALUES (?1, ?2, ?3, ?4, ?5)`)
+    .bind(id, cleanText(body.title, 140, true), cleanText(body.body, 5000, true), audience, admin.id).run()
+  return json({ id }, { status: 201 })
+}
+
+async function createEvent(request, env) {
+  const admin = await requireAdmin(request, env)
+  const body = await readJson(request)
+  const range = validDateRange(body.startsAt, body.endsAt)
+  const audience = ['public', 'members'].includes(body.audience) ? body.audience : 'members'
+  const eventType = ['community', 'meeting'].includes(body.eventType) ? body.eventType : 'community'
+  const id = crypto.randomUUID()
+  await env.DB.prepare(`INSERT INTO events (id, title, description, starts_at, ends_at, audience, event_type, created_by)
+    VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)`).bind(id, cleanText(body.title, 140, true), cleanText(body.description, 3000),
+    range.startsAt, range.endsAt, audience, eventType, admin.id).run()
+  return json({ id }, { status: 201 })
+}
+
+async function createDocument(request, env) {
+  const admin = await requireAdmin(request, env)
+  const body = await readJson(request)
+  const audience = ['public', 'members'].includes(body.audience) ? body.audience : 'members'
+  const url = cleanText(body.url, 1000, true)
+  if (!/^https:\/\//i.test(url)) throw new ResponseError('Document links must use HTTPS.', 400)
+  const id = crypto.randomUUID()
+  await env.DB.prepare(`INSERT INTO documents (id, title, description, document_url, category, audience, created_by)
+    VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)`).bind(id, cleanText(body.title, 140, true), cleanText(body.description, 1000),
+    url, cleanText(body.category || 'General', 80, true), audience, admin.id).run()
+  return json({ id }, { status: 201 })
+}
+
+async function createReservation(request, env) {
+  const user = await requireUser(request, env)
+  const body = await readJson(request)
+  if (body.rulesAcknowledged !== true) throw new ResponseError('You must acknowledge the clubhouse rules.', 400)
+  const range = validDateRange(body.startsAt, body.endsAt, true)
+  const attendeeCount = Number(body.attendeeCount)
+  if (!Number.isInteger(attendeeCount) || attendeeCount < 1 || attendeeCount > 100) throw new ResponseError('Enter an attendee count from 1 to 100.', 400)
+  const conflict = await env.DB.prepare(`SELECT id FROM clubhouse_reservations WHERE status = 'confirmed'
+    AND starts_at < ?2 AND ends_at > ?1 LIMIT 1`).bind(range.startsAt, range.endsAt).first()
+  if (conflict) throw new ResponseError('The clubhouse is already reserved during that time.', 409)
+  const reservationId = crypto.randomUUID()
+  const eventId = crypto.randomUUID()
+  const eventName = cleanText(body.eventName, 140, true)
+  const notes = cleanText(body.notes, 1500)
+  await env.DB.batch([
+    env.DB.prepare(`INSERT INTO events (id, title, description, starts_at, ends_at, audience, event_type, created_by)
+      VALUES (?1, ?2, ?3, ?4, ?5, 'members', 'clubhouse', ?6)`).bind(eventId, `Clubhouse reserved: ${eventName}`, 'Clubhouse reservation', range.startsAt, range.endsAt, user.id),
+    env.DB.prepare(`INSERT INTO clubhouse_reservations (id, user_id, event_id, event_name, starts_at, ends_at,
+      attendee_count, notes, rules_acknowledged_at) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, CURRENT_TIMESTAMP)`)
+      .bind(reservationId, user.id, eventId, eventName, range.startsAt, range.endsAt, attendeeCount, notes),
+  ])
+  return json({ id: reservationId, status: 'confirmed' }, { status: 201 })
+}
+
+async function cancelReservation(request, env, reservationId) {
+  const user = await requireUser(request, env)
+  const reservation = await env.DB.prepare('SELECT id, event_id AS eventId, user_id AS userId, status FROM clubhouse_reservations WHERE id = ?1').bind(reservationId).first()
+  if (!reservation) throw new ResponseError('Reservation not found.', 404)
+  if (reservation.userId !== user.id && !['admin', 'super_admin'].includes(user.role)) throw new ResponseError('Not permitted.', 403)
+  if (reservation.status === 'cancelled') return json({ status: 'cancelled' })
+  await env.DB.batch([
+    env.DB.prepare("UPDATE clubhouse_reservations SET status = 'cancelled', updated_at = CURRENT_TIMESTAMP WHERE id = ?1").bind(reservationId),
+    env.DB.prepare("UPDATE events SET status = 'cancelled', updated_at = CURRENT_TIMESTAMP WHERE id = ?1").bind(reservation.eventId),
+  ])
+  return json({ status: 'cancelled' })
+}
+
 async function register(request, env) {
   const body = await readJson(request)
   await verifyTurnstile(body, env)
@@ -430,6 +606,7 @@ async function handleApi(request, env) {
     const propertyCount = await env.DB.prepare("SELECT COUNT(*) AS count FROM properties WHERE status = 'active'").first('count')
     return json({ status: 'ok', activeProperties: propertyCount })
   }
+  if (request.method === 'GET' && url.pathname === '/api/public/content') return publicContent(env)
   if (request.method === 'GET' && url.pathname === '/api/auth/session') return json({ user: await currentUser(request, env) })
   if (request.method === 'GET' && url.pathname === '/api/auth/google/start') return startGoogleAuth(request, env)
   if (request.method === 'GET' && url.pathname === '/api/auth/google/callback') return finishGoogleAuth(request, env)
@@ -437,7 +614,16 @@ async function handleApi(request, env) {
   if (request.method === 'POST' && url.pathname === '/api/auth/code/request') return requestLoginCode(request, env)
   if (request.method === 'POST' && url.pathname === '/api/auth/code/verify') return verifyLoginCode(request, env)
   if (request.method === 'POST' && url.pathname === '/api/auth/logout') return logout(request, env)
+  if (request.method === 'GET' && url.pathname === '/api/portal/dashboard') return portalDashboard(request, env)
+  if (request.method === 'POST' && url.pathname === '/api/portal/reservations') return createReservation(request, env)
+  const reservationMatch = url.pathname.match(/^\/api\/portal\/reservations\/([^/]+)$/)
+  if (request.method === 'DELETE' && reservationMatch) return cancelReservation(request, env, reservationMatch[1])
   if (request.method === 'GET' && url.pathname === '/api/admin/users') return listUsers(request, env)
+  if (request.method === 'GET' && url.pathname === '/api/admin/dashboard') return adminDashboard(request, env)
+  if (request.method === 'POST' && url.pathname === '/api/admin/properties') return createProperty(request, env)
+  if (request.method === 'POST' && url.pathname === '/api/admin/announcements') return createAnnouncement(request, env)
+  if (request.method === 'POST' && url.pathname === '/api/admin/events') return createEvent(request, env)
+  if (request.method === 'POST' && url.pathname === '/api/admin/documents') return createDocument(request, env)
   const statusMatch = url.pathname.match(/^\/api\/admin\/users\/([^/]+)\/status$/)
   if (request.method === 'PATCH' && statusMatch) return updateUserStatus(request, env, statusMatch[1])
   return json({ error: 'Not found' }, { status: 404 })

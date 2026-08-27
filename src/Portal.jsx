@@ -87,24 +87,42 @@ function authError(status) {
 }
 
 function ResidentHome({ user, onLogout }) {
-  return (
-    <div className="portal-shell">
-      <PortalHeader />
-      <main className="resident-home">
-        <div>
-          <p className="portal-kicker">Resident portal</p>
-          <h1>Welcome, {user.firstName}.</h1>
-          <p className="portal-lead">Your account is connected to {user.address}, Lindale, TX 75771.</p>
-        </div>
-        <section className="resident-status" aria-label="Account status">
-          <span>Account</span><strong>Approved resident</strong>
-          <span>Access</span><strong>Member resources</strong>
-          {user.role !== 'resident' && <a href="/admin">Open administration</a>}
-          <button type="button" className="secondary-button" onClick={onLogout}>Sign out</button>
-        </section>
-      </main>
-    </div>
-  )
+  const [tab, setTab] = useState('overview')
+  const [data, setData] = useState({ announcements: [], events: [], documents: [], reservations: [] })
+  const [reservation, setReservation] = useState({ eventName: '', startsAt: '', endsAt: '', attendeeCount: '1', notes: '', rulesAcknowledged: false })
+  const [error, setError] = useState('')
+  const [notice, setNotice] = useState('')
+
+  async function load() { setData(await api('/api/portal/dashboard')) }
+  useEffect(() => { api('/api/portal/dashboard').then(setData).catch((requestError) => setError(requestError.message)) }, [])
+
+  async function reserve(event) {
+    event.preventDefault(); setError(''); setNotice('')
+    try {
+      await api('/api/portal/reservations', { method: 'POST', body: JSON.stringify({ ...reservation, attendeeCount: Number(reservation.attendeeCount), startsAt: new Date(reservation.startsAt).toISOString(), endsAt: new Date(reservation.endsAt).toISOString() }) })
+      setReservation({ eventName: '', startsAt: '', endsAt: '', attendeeCount: '1', notes: '', rulesAcknowledged: false })
+      setNotice('Your clubhouse reservation is confirmed and has been added to the member calendar.')
+      await load()
+    } catch (requestError) { setError(requestError.message) }
+  }
+
+  async function cancel(id) {
+    setError('')
+    try { await api(`/api/portal/reservations/${id}`, { method: 'DELETE' }); await load() }
+    catch (requestError) { setError(requestError.message) }
+  }
+
+  const tabs = ['overview', 'calendar', 'documents', 'reserve']
+  const dateTime = (value) => new Intl.DateTimeFormat('en-US', { dateStyle: 'medium', timeStyle: 'short' }).format(new Date(value))
+  return <div className="portal-shell"><PortalHeader /><main className="resident-dashboard">
+    <header className="dashboard-heading"><div><p className="portal-kicker">Resident portal</p><h1>Welcome, {user.firstName}.</h1><p className="portal-lead">{user.address}, Lindale, TX 75771</p></div><div className="dashboard-actions">{user.role !== 'resident' && <a className="primary-button" href="/admin">Administration</a>}<button type="button" className="secondary-button" onClick={onLogout}>Sign out</button></div></header>
+    <nav className="workspace-tabs" aria-label="Resident portal sections">{tabs.map((item) => <button type="button" key={item} className={tab === item ? 'active' : ''} onClick={() => { setTab(item); setError(''); setNotice('') }}>{item}</button>)}</nav>
+    {notice && <p className="form-notice" role="status">{notice}</p>}{error && <p className="form-error" role="alert">{error}</p>}
+    {tab === 'overview' && <div className="dashboard-columns"><section><h2>Announcements</h2>{data.announcements.map((item) => <article className="announcement" key={item.id}><small>{dateTime(item.publishedAt)}</small><h3>{item.title}</h3><p>{item.body}</p></article>)}{data.announcements.length === 0 && <p className="empty-state">No member announcements yet.</p>}</section><section><h2>Coming up</h2>{data.events.slice(0, 5).map((item) => <div className="data-row" key={item.id}><div><strong>{item.title}</strong><small>{dateTime(item.startsAt)}</small></div><span>{item.eventType}</span></div>)}{data.events.length === 0 && <p className="empty-state">No upcoming events.</p>}</section></div>}
+    {tab === 'calendar' && <section className="data-list">{data.events.map((item) => <div className="calendar-row" key={item.id}><time>{dateTime(item.startsAt)}</time><div><strong>{item.title}</strong><p>{item.description}</p></div><span>{item.eventType}</span></div>)}{data.events.length === 0 && <p className="empty-state">No upcoming events.</p>}</section>}
+    {tab === 'documents' && <section className="document-list">{data.documents.map((item) => <a href={item.url} target="_blank" rel="noreferrer" key={item.id}><div><strong>{item.title}</strong><small>{item.description || item.category}</small></div><span>{item.category}</span></a>)}{data.documents.length === 0 && <p className="empty-state">No member documents have been added.</p>}</section>}
+    {tab === 'reserve' && <div className="workspace-grid"><section className="editor-panel"><h2>Reserve the clubhouse</h2><form onSubmit={reserve}><label>Event name<input required maxLength="140" value={reservation.eventName} onChange={(event) => setReservation({ ...reservation, eventName: event.target.value })} /></label><div className="field-row"><label>Starts<input required type="datetime-local" value={reservation.startsAt} onChange={(event) => setReservation({ ...reservation, startsAt: event.target.value })} /></label><label>Ends<input required type="datetime-local" value={reservation.endsAt} onChange={(event) => setReservation({ ...reservation, endsAt: event.target.value })} /></label></div><label>Expected attendees<input required type="number" min="1" max="100" value={reservation.attendeeCount} onChange={(event) => setReservation({ ...reservation, attendeeCount: event.target.value })} /></label><label>Notes<textarea maxLength="1500" value={reservation.notes} onChange={(event) => setReservation({ ...reservation, notes: event.target.value })} /></label><label className="rules-check"><input required type="checkbox" checked={reservation.rulesAcknowledged} onChange={(event) => setReservation({ ...reservation, rulesAcknowledged: event.target.checked })} /><span>I acknowledge the clubhouse rules and accept responsibility for the facility during this reservation.</span></label><button className="primary-button">Confirm reservation</button></form></section><section className="data-list"><h2>Your reservations</h2>{data.reservations.map((item) => <div className="data-row" key={item.id}><div><strong>{item.eventName}</strong><small>{dateTime(item.startsAt)}</small></div>{item.status === 'confirmed' ? <button type="button" className="quiet-button" onClick={() => cancel(item.id)}>Cancel</button> : <span>{item.status}</span>}</div>)}{data.reservations.length === 0 && <p className="empty-state">You have no reservations.</p>}</section></div>}
+  </main></div>
 }
 
 export default function Portal() {
