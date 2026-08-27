@@ -12,6 +12,20 @@ function PublicUpdates() {
   return <section className="content-section public-content"><div className="section-heading"><p className="section-label">Official community information</p><h2>Latest from the HOA.</h2></div><div className="public-content-grid"><div>{content.announcements.map((item) => <article key={item.id}><p className="tag">Announcement</p><h3>{item.title}</h3><p>{item.body}</p></article>)}{content.events.map((item) => <article key={item.id}><p className="tag">{date(item.startsAt)}</p><h3>{item.title}</h3><p>{item.description}</p></article>)}</div><div className="public-documents">{content.documents.map((item) => <a key={item.id} href={item.url} target="_blank" rel="noreferrer"><span>{item.category}</span><strong>{item.title}</strong></a>)}</div></div></section>
 }
 
+function CommunityGallery() {
+  const [photos, setPhotos] = useState([])
+  const [active, setActive] = useState(0)
+  useEffect(() => { fetch('/api/public/gallery').then((response) => response.json()).then((body) => setPhotos(body.photos || [])).catch(() => {}) }, [])
+  useEffect(() => {
+    if (photos.length < 2) return undefined
+    const timer = window.setInterval(() => setActive((index) => (index + 1) % photos.length), 7000)
+    return () => window.clearInterval(timer)
+  }, [photos.length])
+  if (photos.length === 0) return null
+  const photo = photos[Math.min(active, photos.length - 1)]
+  return <section className="gallery-section" aria-label="Community photo gallery"><div className="gallery-heading"><div><p className="section-label">Around the neighborhood</p><h2>Life on Penny Lane.</h2></div><div className="gallery-controls"><button type="button" aria-label="Previous photo" onClick={() => setActive((active - 1 + photos.length) % photos.length)}>&larr;</button><span>{active + 1} / {photos.length}</span><button type="button" aria-label="Next photo" onClick={() => setActive((active + 1) % photos.length)}>&rarr;</button></div></div><figure><img src={`/api/gallery/${photo.id}`} alt={photo.altText} width={photo.width || undefined} height={photo.height || undefined} />{photo.caption && <figcaption>{photo.caption}</figcaption>}</figure><div className="gallery-dots" aria-label="Choose photo">{photos.map((item, index) => <button type="button" className={index === active ? 'active' : ''} aria-label={`Show photo ${index + 1}`} key={item.id} onClick={() => setActive(index)} />)}</div></section>
+}
+
 function ContactForm() {
   const [form, setForm] = useState({ name: '', email: '', phone: '', category: 'general', message: '' })
   const [token, setToken] = useState('')
@@ -51,6 +65,7 @@ function App() {
     <section className="intro-band"><p className="section-label">The neighborhood brief</p><p className="intro-copy">Penny Lane is more than a street address. It&apos;s Saturday walks, porch hellos, and a shared commitment to making this place feel like home.</p><span className="scroll-cue" aria-hidden="true">&#8595;</span></section>
     <section className="content-section" id="updates"><div className="section-heading"><p className="section-label">From around the lane</p><h2>In the know.</h2></div><div className="update-layout"><article className="featured-update"><div className="update-date">08 <span>SEP</span></div><div><p className="tag">Board update</p><h3>Fall meeting &amp; neighborhood potluck</h3><p>Join us under the oaks for our quarterly meeting, followed by an easygoing evening together.</p></div></article><div className="small-updates"><article><p className="tag">Maintenance</p><h3>Seasonal community updates will appear here.</h3></article><article><p className="tag">Good to know</p><h3>Public documents are available below when posted.</h3></article></div></div></section>
     <PublicUpdates />
+    <CommunityGallery />
     <section className="resources-section" id="resources"><div className="section-heading"><p className="section-label">Make yourself at home</p><h2>Useful things,<br /><i>close at hand.</i></h2></div><div className="resource-grid"><a href="/portal" className="resource-card"><span className="card-number">01</span><h3>Resident portal</h3><p>Member news, documents, and reservations.</p><span className="card-arrow">&#8599;</span></a><a href="#contact" className="resource-card"><span className="card-number">02</span><h3>Request a review</h3><p>Contact the board about an exterior change.</p><span className="card-arrow">&#8599;</span></a><a href="#contact" className="resource-card"><span className="card-number">03</span><h3>Find a document</h3><p>Public rules and shared community files.</p><span className="card-arrow">&#8599;</span></a></div></section>
     <footer id="contact"><div className="footer-heading"><p className="section-label">Keep the conversation going</p><h2>Have a question?<br /><i>We&apos;re nearby.</i></h2><p>Messages are delivered to the HOA board and retained for follow-up.</p></div><div className="footer-contact"><ContactForm /><p className="copyright">&copy; 2026 Penny Lane Estates HOA <span>&bull;</span> Lindale, TX</p></div></footer>
   </main>

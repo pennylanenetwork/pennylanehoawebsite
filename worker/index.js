@@ -11,6 +11,7 @@ const LOGIN_CODE_MAX_ATTEMPTS = 5
 const LOGIN_CODE_RATE_SECONDS = 60
 const MAX_BODY_BYTES = 16384
 const MAX_DOCUMENT_BYTES = 15 * 1024 * 1024
+const MAX_GALLERY_BYTES = 10 * 1024 * 1024
 const DOCUMENT_TYPES = new Set([
   'application/pdf',
   'application/msword',
@@ -20,6 +21,7 @@ const DOCUMENT_TYPES = new Set([
   'image/jpeg',
   'image/png',
 ])
+const GALLERY_TYPES = new Set(['image/jpeg', 'image/png', 'image/webp'])
 
 function json(data, init = {}) {
   return new Response(JSON.stringify(data), {
@@ -417,7 +419,7 @@ async function publicContent(env) {
 
 async function adminDashboard(request, env) {
   await requireAdmin(request, env)
-  const [properties, phases, announcements, events, documents, reservations, messages] = await env.DB.batch([
+  const [properties, phases, announcements, events, documents, reservations, messages, photos] = await env.DB.batch([
     env.DB.prepare(`SELECT properties.id, properties.street_number || ' ' || properties.street_name || ' ' || properties.street_suffix AS address,
       properties.status, hoa_phases.name AS phase FROM properties INNER JOIN hoa_phases ON hoa_phases.id = properties.phase_id
       ORDER BY properties.street_name, properties.street_number`),
@@ -440,9 +442,97 @@ async function adminDashboard(request, env) {
       ORDER BY clubhouse_reservations.starts_at DESC LIMIT 100`),
     env.DB.prepare(`SELECT id, name, email, phone, category, message, status, admin_notes AS adminNotes,
       created_at AS createdAt FROM contact_messages ORDER BY created_at DESC LIMIT 200`),
+    env.DB.prepare(`SELECT id, original_name AS originalName, mime_type AS mimeType, file_size AS fileSize,
+      width, height, alt_text AS altText, caption, sort_order AS sortOrder, status, created_at AS createdAt
+      FROM gallery_photos ORDER BY sort_order, created_at`),
   ])
   return json({ properties: properties.results, phases: phases.results, announcements: announcements.results,
-    events: events.results, documents: documents.results, reservations: reservations.results, messages: messages.results })
+    events: events.results, documents: documents.results, reservations: reservations.results,
+    messages: messages.results, photos: photos.results })
+}
+
+async function publicGallery(env) {
+  const result = await env.DB.prepare(`SELECT id, alt_text AS altText, caption, width, height
+    FROM gallery_photos WHERE status = 'active' ORDER BY sort_order, created_at`).all()
+  return json({ photos: result.results }, { headers: { 'cache-control': 'public, max-age=60' } })
+}
+
+async function galleryImage(env, id) {
+  const photo = await env.DB.prepare(`SELECT storage_key AS storageKey, mime_type AS mimeType
+    FROM gallery_photos WHERE id = ?1 AND status = 'active'`).bind(id).first()
+  if (!photo) throw new ResponseError('Photo not found.', 404)
+  const object = await env.DOCUMENTS.get(photo.storageKey)
+  if (!object) throw new ResponseError('Photo file not found.', 404)
+  return new Response(object.body, { headers: {
+    'cache-control': 'public, max-age=86400',
+    'content-length': String(object.size),
+    'content-type': photo.mimeType,
+    'x-content-type-options': 'nosniff',
+  } })
+}
+
+async function adminGalleryImage(request, env, id) {
+  await requireAdmin(request, env)
+  const photo = await env.DB.prepare('SELECT storage_key AS storageKey, mime_type AS mimeType FROM gallery_photos WHERE id = ?1').bind(id).first()
+  if (!photo) throw new ResponseError('Photo not found.', 404)
+  const object = await env.DOCUMENTS.get(photo.storageKey)
+  if (!object) throw new ResponseError('Photo file not found.', 404)
+  return new Response(object.body, { headers: { 'cache-control': 'private, no-store', 'content-type': photo.mimeType, 'x-content-type-options': 'nosniff' } })
+}
+
+async function uploadGalleryPhoto(request, env) {
+  const admin = await requireAdmin(request, env)
+  const contentLength = Number(request.headers.get('content-length'))
+  if (!Number.isFinite(contentLength) || contentLength <= 0 || contentLength > MAX_GALLERY_BYTES + 65536) {
+    throw new ResponseError('Photos must be 10 MB or smaller.', 413)
+  }
+  const form = await request.formData()
+  const file = form.get('file')
+  if (!(file instanceof File) || file.size <= 0) throw new ResponseError('Choose a photo to upload.', 400)
+  if (file.size > MAX_GALLERY_BYTES) throw new ResponseError('Photos must be 10 MB or smaller.', 413)
+  if (!GALLERY_TYPES.has(file.type)) throw new ResponseError('Upload a JPEG, PNG, or WebP image.', 400)
+  const altText = cleanText(form.get('altText'), 300, true)
+  const caption = cleanText(form.get('caption'), 500)
+  const width = Number(form.get('width'))
+  const height = Number(form.get('height'))
+  const id = crypto.randomUUID()
+  const name = safeFileName(file.name)
+  const extension = file.type === 'image/webp' ? '.webp' : file.type === 'image/png' ? '.png' : '.jpg'
+  const storageKey = `gallery/${id}/${crypto.randomUUID()}${extension}`
+  const maximumOrder = await env.DB.prepare('SELECT COALESCE(MAX(sort_order), -1) + 1 AS nextOrder FROM gallery_photos').first('nextOrder')
+  await env.DOCUMENTS.put(storageKey, file.stream(), { httpMetadata: { contentType: file.type }, customMetadata: { uploadedBy: admin.id, photoId: id } })
+  try {
+    await env.DB.prepare(`INSERT INTO gallery_photos (id, storage_key, original_name, mime_type, file_size,
+      width, height, alt_text, caption, sort_order, uploaded_by) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11)`)
+      .bind(id, storageKey, name, file.type, file.size, Number.isInteger(width) && width > 0 ? width : null,
+        Number.isInteger(height) && height > 0 ? height : null, altText, caption, maximumOrder, admin.id).run()
+  } catch (error) {
+    await env.DOCUMENTS.delete(storageKey)
+    throw error
+  }
+  return json({ id }, { status: 201 })
+}
+
+async function updateGalleryPhoto(request, env, id) {
+  await requireAdmin(request, env)
+  const body = await readJson(request)
+  const status = ['active', 'hidden'].includes(body.status) ? body.status : null
+  const sortOrder = Number(body.sortOrder)
+  if (!status || !Number.isInteger(sortOrder)) throw new ResponseError('Enter valid photo settings.', 400)
+  const result = await env.DB.prepare(`UPDATE gallery_photos SET alt_text = ?1, caption = ?2, status = ?3,
+    sort_order = ?4, updated_at = CURRENT_TIMESTAMP WHERE id = ?5`).bind(cleanText(body.altText, 300, true),
+    cleanText(body.caption, 500), status, sortOrder, id).run()
+  if (!result.meta.changes) throw new ResponseError('Photo not found.', 404)
+  return json({ status: 'updated' })
+}
+
+async function deleteGalleryPhoto(request, env, id) {
+  await requireAdmin(request, env)
+  const photo = await env.DB.prepare('SELECT storage_key AS storageKey FROM gallery_photos WHERE id = ?1').bind(id).first()
+  if (!photo) throw new ResponseError('Photo not found.', 404)
+  await env.DB.prepare('DELETE FROM gallery_photos WHERE id = ?1').bind(id).run()
+  await env.DOCUMENTS.delete(photo.storageKey)
+  return json({ status: 'deleted' })
 }
 
 function icsText(value) {
@@ -1081,6 +1171,9 @@ async function handleApi(request, env) {
     return json({ status: 'ok', activeProperties: propertyCount })
   }
   if (request.method === 'GET' && url.pathname === '/api/public/content') return publicContent(env)
+  if (request.method === 'GET' && url.pathname === '/api/public/gallery') return publicGallery(env)
+  const galleryImageMatch = url.pathname.match(/^\/api\/gallery\/([^/]+)$/)
+  if (galleryImageMatch && request.method === 'GET') return galleryImage(env, galleryImageMatch[1])
   const calendarDownloadMatch = url.pathname.match(/^\/api\/events\/([^/]+)\.ics$/)
   if (calendarDownloadMatch && request.method === 'GET') return downloadEventCalendar(request, env, calendarDownloadMatch[1])
   if (request.method === 'POST' && url.pathname === '/api/contact') return createContactMessage(request, env)
@@ -1106,6 +1199,9 @@ async function handleApi(request, env) {
   if (request.method === 'POST' && url.pathname === '/api/admin/events') return createEvent(request, env)
   if (request.method === 'POST' && url.pathname === '/api/admin/documents') return createDocument(request, env)
   if (request.method === 'POST' && url.pathname === '/api/admin/documents/upload') return uploadDocument(request, env)
+  if (request.method === 'POST' && url.pathname === '/api/admin/gallery') return uploadGalleryPhoto(request, env)
+  const adminGalleryImageMatch = url.pathname.match(/^\/api\/admin\/gallery\/([^/]+)\/image$/)
+  if (adminGalleryImageMatch && request.method === 'GET') return adminGalleryImage(request, env, adminGalleryImageMatch[1])
   const propertyMatch = url.pathname.match(/^\/api\/admin\/properties\/([^/]+)$/)
   if (propertyMatch && request.method === 'PATCH') return updateProperty(request, env, propertyMatch[1])
   const announcementMatch = url.pathname.match(/^\/api\/admin\/announcements\/([^/]+)$/)
@@ -1124,6 +1220,9 @@ async function handleApi(request, env) {
   if (adminReservationMatch && request.method === 'DELETE') return cancelReservation(request, env, adminReservationMatch[1])
   const contactMessageMatch = url.pathname.match(/^\/api\/admin\/messages\/([^/]+)$/)
   if (contactMessageMatch && request.method === 'PATCH') return updateContactMessage(request, env, contactMessageMatch[1])
+  const galleryMatch = url.pathname.match(/^\/api\/admin\/gallery\/([^/]+)$/)
+  if (galleryMatch && request.method === 'PATCH') return updateGalleryPhoto(request, env, galleryMatch[1])
+  if (galleryMatch && request.method === 'DELETE') return deleteGalleryPhoto(request, env, galleryMatch[1])
   const statusMatch = url.pathname.match(/^\/api\/admin\/users\/([^/]+)\/status$/)
   if (request.method === 'PATCH' && statusMatch) return updateUserStatus(request, env, statusMatch[1])
   const userMatch = url.pathname.match(/^\/api\/admin\/users\/([^/]+)$/)

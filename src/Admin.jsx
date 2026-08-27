@@ -19,11 +19,27 @@ function localDateTime(value) {
   return new Date(date - offset).toISOString().slice(0, 16)
 }
 
+async function optimizePhoto(file) {
+  const image = await createImageBitmap(file)
+  const scale = Math.min(1, 2000 / Math.max(image.width, image.height))
+  const width = Math.max(1, Math.round(image.width * scale))
+  const height = Math.max(1, Math.round(image.height * scale))
+  const canvas = document.createElement('canvas')
+  canvas.width = width
+  canvas.height = height
+  const context = canvas.getContext('2d')
+  context.drawImage(image, 0, 0, width, height)
+  image.close()
+  const blob = await new Promise((resolve) => canvas.toBlob(resolve, 'image/webp', 0.84))
+  if (!blob) throw new Error('This image could not be prepared for upload.')
+  return { file: new File([blob], `${file.name.replace(/\.[^.]+$/, '')}.webp`, { type: 'image/webp' }), width, height }
+}
+
 export default function Admin() {
   const [tab, setTab] = useState('accounts')
   const [user, setUser] = useState(null)
   const [accounts, setAccounts] = useState([])
-  const [data, setData] = useState({ properties: [], announcements: [], events: [], documents: [], reservations: [], messages: [] })
+  const [data, setData] = useState({ properties: [], announcements: [], events: [], documents: [], reservations: [], messages: [], photos: [] })
   const [forms, setForms] = useState(emptyForms)
   const [editing, setEditing] = useState(null)
   const [documentMode, setDocumentMode] = useState('upload')
@@ -172,7 +188,33 @@ export default function Admin() {
     } catch (requestError) { setError(requestError.message) }
   }
 
-  const tabs = ['accounts', 'properties', 'announcements', 'events', 'documents', 'reservations', 'messages']
+  async function uploadPhoto(form, sourceFile) {
+    setError('')
+    setNotice('')
+    try {
+      const optimized = await optimizePhoto(sourceFile)
+      const body = new FormData()
+      body.append('file', optimized.file)
+      body.append('width', optimized.width)
+      body.append('height', optimized.height)
+      body.append('altText', form.altText)
+      body.append('caption', form.caption)
+      await api('/api/admin/gallery', { method: 'POST', body })
+      setNotice('Photo optimized and uploaded.')
+      await load()
+      return true
+    } catch (requestError) { setError(requestError.message); return false }
+  }
+
+  async function updatePhoto(id, photo) {
+    setError('')
+    try {
+      await api(`/api/admin/gallery/${id}`, { method: 'PATCH', body: JSON.stringify(photo) })
+      await load()
+    } catch (requestError) { setError(requestError.message) }
+  }
+
+  const tabs = ['accounts', 'properties', 'announcements', 'events', 'documents', 'photos', 'reservations', 'messages']
 
   return <div className="portal-shell admin-shell">
     <header className="portal-header">
@@ -223,6 +265,8 @@ export default function Admin() {
         <FormActions editing={editing?.kind === 'document'} label={documentMode === 'upload' ? 'Upload document' : 'Add document'} onCancel={() => stopEditing('document')} />
       </form>} rows={data.documents.map((item) => <DataRow key={item.id} title={item.title} detail={`${item.category}${item.originalName ? ` | ${item.originalName}` : ''}`} meta={item.audience} actions={<RowActions onEdit={() => beginEdit('document', item)} onDelete={() => remove('documents', item.id, 'Delete this document?')} />} />)} />}
 
+      {tab === 'photos' && <PhotoManager photos={data.photos} onUpload={uploadPhoto} onUpdate={updatePhoto} onDelete={(id) => remove('gallery', id, 'Delete this photo permanently?')} />}
+
       {tab === 'reservations' && <div className="reservation-admin-list">{data.reservations.map((item) => <ReservationReview key={item.id} item={item} onDecide={decideReservation} onCancel={() => remove('reservations', item.id, 'Cancel this clubhouse reservation?')} />)}{data.reservations.length === 0 && <p className="empty-state">No clubhouse reservation requests yet.</p>}</div>}
       {tab === 'messages' && <div className="message-admin-list">{data.messages.map((item) => <MessageReview key={item.id} item={item} onUpdate={updateMessage} />)}{data.messages.length === 0 && <p className="empty-state">No contact messages yet.</p>}</div>}
     </main>
@@ -267,4 +311,38 @@ function AccountReview({ account, currentUser, properties, onStatus, onSave }) {
   })
   const update = (field, value) => setForm({ ...form, [field]: value })
   return <article className="account-review"><header><div><strong>{account.firstName} {account.lastName}</strong><small>{account.email} | {account.address}</small></div><div><span className={`status status-${account.status}`}>{account.status}</span><span className="account-type">{account.residentType?.replace('_', ' ')}</span></div></header>{editing ? <form onSubmit={async (event) => { event.preventDefault(); if (await onSave(account.id, form)) setEditing(false) }}><div className="field-row"><label>First name<input required value={form.firstName} onChange={(event) => update('firstName', event.target.value)} /></label><label>Last name<input required value={form.lastName} onChange={(event) => update('lastName', event.target.value)} /></label></div><div className="field-row"><label>Email<input required type="email" value={form.email} onChange={(event) => update('email', event.target.value)} /></label><label>Phone<input value={form.phone} onChange={(event) => update('phone', event.target.value)} /></label></div><label>Property<select value={form.propertyId} onChange={(event) => update('propertyId', Number(event.target.value))}>{properties.map((property) => <option value={property.id} key={property.id}>{property.address} ({property.status})</option>)}</select></label><div className="field-row"><label>Resident type<select value={form.residentType} onChange={(event) => update('residentType', event.target.value)}><option value="owner">Owner</option><option value="tenant">Tenant</option><option value="household_member">Household member</option></select></label><label>Access role<select value={form.role} disabled={account.id === currentUser?.id} onChange={(event) => update('role', event.target.value)}><option value="resident">Resident</option><option value="admin">Administrator</option>{currentUser?.role === 'super_admin' && <option value="super_admin">Super administrator</option>}</select></label></div><div className="form-actions"><button className="primary-button">Save resident</button><button type="button" className="quiet-button" onClick={() => setEditing(false)}>Cancel</button></div></form> : <div className="account-review-actions"><button type="button" onClick={() => setEditing(true)}>Edit</button>{account.status !== 'active' && <button type="button" onClick={() => onStatus(account.id, 'active')}>Approve</button>}{account.status === 'active' && account.id !== currentUser?.id && <button type="button" onClick={() => onStatus(account.id, 'suspended')}>Suspend</button>}{account.status === 'pending' && <button type="button" className="row-delete" onClick={() => onStatus(account.id, 'rejected')}>Reject</button>}</div>}</article>
+}
+
+function PhotoManager({ photos, onUpload, onUpdate, onDelete }) {
+  const [file, setFile] = useState(null)
+  const [form, setForm] = useState({ altText: '', caption: '' })
+  const [busy, setBusy] = useState(false)
+
+  async function submit(event) {
+    event.preventDefault()
+    if (!file) return
+    const formElement = event.currentTarget
+    setBusy(true)
+    if (await onUpload(form, file)) {
+      setFile(null)
+      setForm({ altText: '', caption: '' })
+      formElement.reset()
+    }
+    setBusy(false)
+  }
+
+  async function move(index, direction) {
+    const other = photos[index + direction]
+    if (!other) return
+    const current = photos[index]
+    await onUpdate(current.id, { ...current, sortOrder: other.sortOrder })
+    await onUpdate(other.id, { ...other, sortOrder: current.sortOrder })
+  }
+
+  return <div className="photo-workspace"><section className="editor-panel"><h2>Add carousel photo</h2><form onSubmit={submit}><label>Photo<input required type="file" accept="image/jpeg,image/png,image/webp" onChange={(event) => setFile(event.target.files[0] || null)} /><span>Images are resized and optimized before upload.</span></label><label>Alternative text<input required maxLength="300" value={form.altText} onChange={(event) => setForm({ ...form, altText: event.target.value })} /><span>Briefly describe what is visible for residents using screen readers.</span></label><label>Caption<textarea maxLength="500" value={form.caption} onChange={(event) => setForm({ ...form, caption: event.target.value })} /></label><button className="primary-button" disabled={busy}>{busy ? 'Optimizing...' : 'Upload photo'}</button></form></section><section className="photo-list">{photos.map((photo, index) => <PhotoEditor key={photo.id} photo={photo} canMoveUp={index > 0} canMoveDown={index < photos.length - 1} onMoveUp={() => move(index, -1)} onMoveDown={() => move(index, 1)} onUpdate={onUpdate} onDelete={() => onDelete(photo.id)} />)}{photos.length === 0 && <p className="empty-state">No carousel photos have been uploaded.</p>}</section></div>
+}
+
+function PhotoEditor({ photo, canMoveUp, canMoveDown, onMoveUp, onMoveDown, onUpdate, onDelete }) {
+  const [form, setForm] = useState({ altText: photo.altText, caption: photo.caption || '', status: photo.status, sortOrder: photo.sortOrder })
+  return <article className="photo-editor"><img src={`/api/admin/gallery/${photo.id}/image`} alt={photo.altText} /><div><label>Alternative text<input maxLength="300" value={form.altText} onChange={(event) => setForm({ ...form, altText: event.target.value })} /></label><label>Caption<textarea maxLength="500" value={form.caption} onChange={(event) => setForm({ ...form, caption: event.target.value })} /></label><div className="photo-actions"><button type="button" title="Move photo earlier" disabled={!canMoveUp} onClick={onMoveUp}>&uarr;</button><button type="button" title="Move photo later" disabled={!canMoveDown} onClick={onMoveDown}>&darr;</button><select aria-label="Photo visibility" value={form.status} onChange={(event) => setForm({ ...form, status: event.target.value })}><option value="active">Visible</option><option value="hidden">Hidden</option></select><button type="button" onClick={() => onUpdate(photo.id, { ...form, sortOrder: photo.sortOrder })}>Save</button><button type="button" className="row-delete" onClick={onDelete}>Delete</button></div></div></article>
 }
