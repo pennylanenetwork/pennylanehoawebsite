@@ -18,6 +18,13 @@
       "migrations_dir": "./migrations"
     }
   ],
+  "services": [
+    {
+      "binding": "TURNSTILE",
+      "service": "turnstile-siteverify-plhoa",
+      "remote": true
+    }
+  ],
   "observability": {
     "enabled": true
   }

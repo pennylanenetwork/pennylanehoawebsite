@@ -8,11 +8,9 @@ const emptyRegistration = {
   email: '',
   phone: '',
   address: '',
-  password: '',
 }
 
 const TURNSTILE_SITE_KEY = '0x4AAAAAAEcUDgznRsbFwnFc'
-const TURNSTILE_VERIFY_URL = 'https://turnstile-siteverify-plhoa.plhoa-website.workers.dev'
 let turnstileScript
 
 function loadTurnstile() {
@@ -64,17 +62,6 @@ function TurnstileWidget({ onToken, resetKey }) {
   return <div className="turnstile-slot" ref={container} data-action="turnstile-spin-v1" />
 }
 
-async function verifyTurnstile(token) {
-  if (!token) throw new Error('Complete the Cloudflare verification first.')
-  const response = await fetch(TURNSTILE_VERIFY_URL, {
-    method: 'POST',
-    headers: { 'content-type': 'application/json' },
-    body: JSON.stringify({ token }),
-  })
-  const result = await response.json().catch(() => ({}))
-  if (!response.ok || result.success !== true) throw new Error('Cloudflare could not verify this request. Please try again.')
-}
-
 function PortalHeader() {
   return (
     <header className="portal-header">
@@ -85,6 +72,18 @@ function PortalHeader() {
       <a className="portal-back" href="/">Back to community site</a>
     </header>
   )
+}
+
+function authNotice(status) {
+  if (status === 'not_registered') return 'That Google account is not registered yet. Submit a resident access request first.'
+  if (status === 'pending') return 'Your resident registration is still awaiting HOA approval.'
+  return ''
+}
+
+function authError(status) {
+  if (status === 'rejected' || status === 'suspended') return 'This resident account is not currently active.'
+  if (status === 'google_failed') return 'Google sign-in could not be completed. Please try again.'
+  return ''
 }
 
 function ResidentHome({ user, onLogout }) {
@@ -109,12 +108,14 @@ function ResidentHome({ user, onLogout }) {
 }
 
 export default function Portal() {
+  const initialAuthStatus = new URLSearchParams(window.location.search).get('auth')
   const [mode, setMode] = useState('login')
   const [registration, setRegistration] = useState(emptyRegistration)
-  const [login, setLogin] = useState({ email: '', password: '' })
+  const [login, setLogin] = useState({ email: '', code: '' })
+  const [loginStage, setLoginStage] = useState('request')
   const [user, setUser] = useState(null)
-  const [notice, setNotice] = useState('')
-  const [error, setError] = useState('')
+  const [notice, setNotice] = useState(() => authNotice(initialAuthStatus))
+  const [error, setError] = useState(() => authError(initialAuthStatus))
   const [busy, setBusy] = useState(false)
   const [loginTurnstile, setLoginTurnstile] = useState('')
   const [registrationTurnstile, setRegistrationTurnstile] = useState('')
@@ -123,20 +124,38 @@ export default function Portal() {
 
   useEffect(() => {
     api('/api/auth/session').then(({ user: currentUser }) => setUser(currentUser)).catch(() => {})
-  }, [])
+    if (initialAuthStatus) window.history.replaceState({}, '', '/portal')
+  }, [initialAuthStatus])
 
-  async function submitLogin(event) {
+  async function requestCode(event) {
     event.preventDefault()
     setBusy(true)
     setError('')
     try {
-      await verifyTurnstile(loginTurnstile)
-      const result = await api('/api/auth/login', { method: 'POST', body: JSON.stringify(login) })
-      setUser(result.user)
+      await api('/api/auth/code/request', {
+        method: 'POST',
+        body: JSON.stringify({ email: login.email, turnstileToken: loginTurnstile }),
+      })
+      setLoginStage('verify')
+      setNotice('If this email belongs to an approved resident, a six-digit sign-in code is on its way.')
     } catch (requestError) {
       setError(requestError.message)
       setLoginTurnstile('')
       setLoginReset((value) => value + 1)
+    } finally {
+      setBusy(false)
+    }
+  }
+
+  async function verifyCode(event) {
+    event.preventDefault()
+    setBusy(true)
+    setError('')
+    try {
+      const result = await api('/api/auth/code/verify', { method: 'POST', body: JSON.stringify(login) })
+      setUser(result.user)
+    } catch (requestError) {
+      setError(requestError.message)
     } finally {
       setBusy(false)
     }
@@ -147,8 +166,10 @@ export default function Portal() {
     setBusy(true)
     setError('')
     try {
-      await verifyTurnstile(registrationTurnstile)
-      await api('/api/auth/register', { method: 'POST', body: JSON.stringify(registration) })
+      await api('/api/auth/register', {
+        method: 'POST',
+        body: JSON.stringify({ ...registration, turnstileToken: registrationTurnstile }),
+      })
       setRegistration(emptyRegistration)
       setNotice('Your request was received. An HOA administrator will verify your residency before portal access is enabled.')
       setMode('login')
@@ -179,17 +200,32 @@ export default function Portal() {
         </section>
         <section className="auth-panel">
           <div className="auth-tabs" role="tablist" aria-label="Account access">
-            <button type="button" className={mode === 'login' ? 'active' : ''} onClick={() => { setMode('login'); setError('') }}>Sign in</button>
-            <button type="button" className={mode === 'register' ? 'active' : ''} onClick={() => { setMode('register'); setError('') }}>Register</button>
+            <button type="button" className={mode === 'login' ? 'active' : ''} onClick={() => { setMode('login'); setError(''); setNotice('') }}>Sign in</button>
+            <button type="button" className={mode === 'register' ? 'active' : ''} onClick={() => { setMode('register'); setError(''); setNotice('') }}>Register</button>
           </div>
           {notice && <p className="form-notice" role="status">{notice}</p>}
           {error && <p className="form-error" role="alert">{error}</p>}
           {mode === 'login' ? (
-            <form onSubmit={submitLogin}>
-              <label>Email address<input required type="email" autoComplete="email" value={login.email} onChange={(event) => setLogin({ ...login, email: event.target.value })} /></label>
-              <label>Password<input required type="password" autoComplete="current-password" value={login.password} onChange={(event) => setLogin({ ...login, password: event.target.value })} /></label>
-              <TurnstileWidget onToken={setLoginTurnstile} resetKey={loginReset} />
-              <button className="primary-button" disabled={busy || !loginTurnstile}>{busy ? 'Signing in...' : 'Sign in'}</button>
+            <form onSubmit={loginStage === 'request' ? requestCode : verifyCode}>
+              {loginStage === 'request' && (
+                <>
+                  <a className="google-button" href="/api/auth/google/start">Continue with Google</a>
+                  <div className="auth-divider"><span>or use email</span></div>
+                </>
+              )}
+              <label>Email address<input required type="email" autoComplete="email" disabled={loginStage === 'verify'} value={login.email} onChange={(event) => setLogin({ ...login, email: event.target.value })} /></label>
+              {loginStage === 'request' ? (
+                <>
+                  <TurnstileWidget onToken={setLoginTurnstile} resetKey={loginReset} />
+                  <button className="primary-button" disabled={busy || !loginTurnstile}>{busy ? 'Sending...' : 'Email me a sign-in code'}</button>
+                </>
+              ) : (
+                <>
+                  <label>Six-digit code<input required inputMode="numeric" autoComplete="one-time-code" maxLength="6" pattern="[0-9]{6}" value={login.code} onChange={(event) => setLogin({ ...login, code: event.target.value.replace(/\D/g, '').slice(0, 6) })} /></label>
+                  <button className="primary-button" disabled={busy || login.code.length !== 6}>{busy ? 'Signing in...' : 'Verify and sign in'}</button>
+                  <button type="button" className="secondary-button" onClick={() => { setLoginStage('request'); setLogin({ ...login, code: '' }); setNotice(''); setLoginTurnstile(''); setLoginReset((value) => value + 1) }}>Use a different email</button>
+                </>
+              )}
             </form>
           ) : (
             <form onSubmit={submitRegistration}>
@@ -200,7 +236,6 @@ export default function Portal() {
               <label>Property address<input required autoComplete="street-address" maxLength="160" placeholder="Street address" value={registration.address} onChange={(event) => setRegistration({ ...registration, address: event.target.value })} /></label>
               <label>Email address<input required type="email" autoComplete="email" maxLength="254" value={registration.email} onChange={(event) => setRegistration({ ...registration, email: event.target.value })} /></label>
               <label>Phone number <span>Optional</span><input type="tel" autoComplete="tel" maxLength="30" value={registration.phone} onChange={(event) => setRegistration({ ...registration, phone: event.target.value })} /></label>
-              <label>Password <span>At least 12 characters</span><input required type="password" autoComplete="new-password" minLength="12" maxLength="128" value={registration.password} onChange={(event) => setRegistration({ ...registration, password: event.target.value })} /></label>
               <TurnstileWidget onToken={setRegistrationTurnstile} resetKey={registrationReset} />
               <button className="primary-button" disabled={busy || !registrationTurnstile}>{busy ? 'Submitting...' : 'Request resident access'}</button>
             </form>

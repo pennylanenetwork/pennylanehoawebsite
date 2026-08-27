@@ -23,6 +23,9 @@
 .primary-button:disabled { cursor: wait; opacity: .6; }
 .turnstile-slot { min-height: 65px; overflow: hidden; }
 .secondary-button { background: transparent; border: 1px solid #aeb7ae; color: #294b3c; }
+.google-button { align-items: center; background: #fff; border: 1px solid #aeb7ae; color: #26352f; display: flex; font-size: 12px; font-weight: 700; justify-content: center; min-height: 44px; }
+.auth-divider { align-items: center; color: #858d87; display: flex; font-size: 10px; gap: 12px; text-transform: uppercase; }
+.auth-divider::before, .auth-divider::after { background: #d2d6cf; content: ''; flex: 1; height: 1px; }
 .form-error, .form-notice { font-size: 12px; line-height: 1.5; margin: 0 0 20px; padding: 12px; }
 .form-error { background: #f5e4df; color: #843b2b; }
 .form-notice { background: #e4ece4; color: #294b3c; }
