@@ -231,6 +231,15 @@ async function activeAdminRecipients(env) {
   return result.results.map((admin) => ({ email: admin.email, name: `${admin.firstName} ${admin.lastName}`.trim() }))
 }
 
+async function messageRecipients(env, category) {
+  let condition = "role IN ('admin', 'super_admin')"
+  if (category === 'board') condition = "is_board_member = 1 OR role = 'super_admin'"
+  if (category === 'architectural') condition = "is_acc_member = 1 OR role = 'super_admin'"
+  const result = await env.DB.prepare(`SELECT email, first_name AS firstName, last_name AS lastName FROM users
+    WHERE status = 'active' AND (${condition}) ORDER BY id`).all()
+  return result.results.map((user) => ({ email: user.email, name: `${user.firstName} ${user.lastName}`.trim() }))
+}
+
 async function notifyReservationAdmins(env, user, reservation) {
   const recipients = await activeAdminRecipients(env)
   const residentName = `${user.firstName} ${user.lastName}`.trim()
@@ -367,6 +376,7 @@ async function currentUser(request, env) {
   const user = await env.DB.prepare(`
     SELECT users.id, users.email, users.first_name AS firstName,
       users.last_name AS lastName, users.phone, users.role, users.status, users.resident_type AS residentType,
+      users.is_board_member AS isBoardMember, users.is_acc_member AS isAccMember,
       users.notify_announcements AS notifyAnnouncements, users.notify_events AS notifyEvents,
       users.property_id AS propertyId,
       properties.street_number || ' ' || properties.street_name || ' ' || properties.street_suffix AS address
@@ -389,6 +399,12 @@ async function requireSuperAdmin(request, env) {
   const user = await requireUser(request, env)
   if (user.role !== 'super_admin') throw new ResponseError('Super administrator access required.', 403)
   return user
+}
+
+function canAccessMessage(user, category) {
+  return user.role === 'super_admin' || ['general', 'maintenance'].includes(category)
+    || category === 'board' && Boolean(user.isBoardMember)
+    || category === 'architectural' && Boolean(user.isAccMember)
 }
 
 async function requireUser(request, env) {
@@ -514,7 +530,7 @@ async function publicContent(env) {
 }
 
 async function adminDashboard(request, env) {
-  await requireAdmin(request, env)
+  const admin = await requireAdmin(request, env)
   const [properties, phases, announcements, events, documents, reservations, messages, messageReplies, photos, guests, poolCards,
     clubhouse, blackouts] = await env.DB.batch([
     env.DB.prepare(`SELECT properties.id, properties.street_number || ' ' || properties.street_name || ' ' || properties.street_suffix AS address,
@@ -544,7 +560,11 @@ async function adminDashboard(request, env) {
       CASE WHEN contact_messages.user_id IS NULL THEN 'Public website' ELSE 'Resident portal' END AS source,
       properties.street_number || ' ' || properties.street_name || ' ' || properties.street_suffix AS address
       FROM contact_messages LEFT JOIN properties ON properties.id = contact_messages.property_id
-      ORDER BY contact_messages.created_at DESC LIMIT 200`),
+      WHERE (?1 = 1 OR contact_messages.category IN ('general', 'maintenance')
+        OR (?2 = 1 AND contact_messages.category = 'board')
+        OR (?3 = 1 AND contact_messages.category = 'architectural'))
+      ORDER BY contact_messages.created_at DESC LIMIT 200`).bind(admin.role === 'super_admin' ? 1 : 0,
+      admin.isBoardMember ? 1 : 0, admin.isAccMember ? 1 : 0),
     env.DB.prepare(`SELECT id, contact_message_id AS messageId, author_role AS authorRole, body,
       created_at AS createdAt FROM contact_message_replies ORDER BY created_at`),
     env.DB.prepare(`SELECT id, original_name AS originalName, mime_type AS mimeType, file_size AS fileSize,
@@ -723,7 +743,7 @@ async function createContactMessage(request, env) {
       linkedUser?.id || null, email, `Website contact: ${category}`, message.slice(0, 500), id),
   ])
   try {
-    await sendTransactionalEmail(env, [{ email: 'board@pennylanehoa.net', name: 'Penny Lane HOA Board' }],
+    await sendTransactionalEmail(env, await messageRecipients(env, category),
       `Website contact: ${category} - ${name}`,
       `<p>A new website message was submitted.</p><p><strong>From:</strong> ${escapeHtml(name)} (${escapeHtml(email)})${phone ? `<br><strong>Phone:</strong> ${escapeHtml(phone)}` : ''}<br><strong>Category:</strong> ${escapeHtml(category)}</p><p>${escapeHtml(message).replace(/\n/g, '<br>')}</p><p>The message is also stored in the administration dashboard.</p>`,
       'website-contact', { name, email })
@@ -753,7 +773,7 @@ async function createResidentMessage(request, env) {
       `Resident portal message: ${category}`, message.slice(0, 500), id),
   ])
   try {
-    await sendTransactionalEmail(env, [{ email: 'board@pennylanehoa.net', name: 'Penny Lane HOA Board' }],
+    await sendTransactionalEmail(env, await messageRecipients(env, category),
       `Resident message: ${category} - ${name}`,
       `<p>A resident sent a message through the portal.</p><p><strong>From:</strong> ${escapeHtml(name)} (${escapeHtml(user.email)})${user.phone ? `<br><strong>Phone:</strong> ${escapeHtml(user.phone)}` : ''}<br><strong>Property:</strong> ${escapeHtml(user.address)}<br><strong>Category:</strong> ${escapeHtml(category)}</p><p>${escapeHtml(message).replace(/\n/g, '<br>')}</p><p>The message is also stored in the administration dashboard.</p>`,
       'resident-message', { name, email: user.email })
@@ -824,11 +844,14 @@ async function revokeGuestRegistration(request, env, id) {
 }
 
 async function updateContactMessage(request, env, id) {
-  await requireAdmin(request, env)
+  const admin = await requireAdmin(request, env)
   const body = await readJson(request)
   const status = ['new', 'read', 'closed'].includes(body.status) ? body.status : null
   if (!status) throw new ResponseError('Select a valid message status.', 400)
   const notes = cleanText(body.adminNotes, 3000)
+  const message = await env.DB.prepare('SELECT category FROM contact_messages WHERE id = ?1').bind(id).first()
+  if (!message) throw new ResponseError('Message not found.', 404)
+  if (!canAccessMessage(admin, message.category)) throw new ResponseError('Not permitted.', 403)
   const result = await env.DB.prepare(`UPDATE contact_messages SET status = ?1, admin_notes = ?2,
     updated_at = CURRENT_TIMESTAMP WHERE id = ?3`).bind(status, notes, id).run()
   if (!result.meta.changes) throw new ResponseError('Message not found.', 404)
@@ -842,6 +865,7 @@ async function replyToContactMessage(request, env, id) {
   const message = await env.DB.prepare(`SELECT id, name, email, category, message, user_id AS userId,
     property_id AS propertyId FROM contact_messages WHERE id = ?1`).bind(id).first()
   if (!message) throw new ResponseError('Message not found.', 404)
+  if (!canAccessMessage(admin, message.category)) throw new ResponseError('Not permitted.', 403)
   let emailStatus = 'sent'
   try {
     await sendTransactionalEmail(env, [{ email: message.email, name: message.name }],
@@ -881,7 +905,7 @@ async function replyToResidentMessage(request, env, id) {
   if (recent) throw new ResponseError('Please wait before sending another reply.', 429)
   let emailStatus = 'sent'
   try {
-    await sendTransactionalEmail(env, await activeAdminRecipients(env),
+    await sendTransactionalEmail(env, await messageRecipients(env, message.category),
       `Resident reply: ${message.category} - ${user.firstName} ${user.lastName}`,
       `<p>A resident replied to a message in the portal.</p><p><strong>From:</strong> ${escapeHtml(`${user.firstName} ${user.lastName}`)} (${escapeHtml(user.email)})<br><strong>Property:</strong> ${escapeHtml(user.address)}<br><strong>Category:</strong> ${escapeHtml(message.category)}</p><p>${escapeHtml(reply).replace(/\n/g, '<br>')}</p><p>The full conversation is stored in the administration dashboard.</p>`,
       'resident-message-reply', null, false)
@@ -1590,6 +1614,7 @@ async function listUsers(request, env) {
   const result = await env.DB.prepare(`
     SELECT users.id, users.email, users.first_name AS firstName, users.last_name AS lastName, users.phone,
       users.role, users.status, users.resident_type AS residentType, users.property_id AS propertyId,
+      users.is_board_member AS isBoardMember, users.is_acc_member AS isAccMember,
       users.notify_announcements AS notifyAnnouncements, users.notify_events AS notifyEvents, users.created_at AS createdAt,
       properties.street_number || ' ' || properties.street_name || ' ' || properties.street_suffix AS address
     FROM users INNER JOIN properties ON properties.id = users.property_id
@@ -1637,13 +1662,18 @@ async function updateUserStatus(request, env, targetId) {
 async function updateUserProfile(request, env, targetId) {
   const admin = await requireAdmin(request, env)
   const body = await readJson(request)
-  const target = await env.DB.prepare('SELECT id, role FROM users WHERE id = ?1').bind(targetId).first()
+  const target = await env.DB.prepare(`SELECT id, role, is_board_member AS isBoardMember,
+    is_acc_member AS isAccMember FROM users WHERE id = ?1`).bind(targetId).first()
   if (!target) throw new ResponseError('Account not found.', 404)
   if (target.role === 'super_admin' && admin.role !== 'super_admin') throw new ResponseError('Super administrator access required.', 403)
   const email = cleanText(body.email, 254, true).toLowerCase()
   if (!/^\S+@\S+\.\S+$/.test(email)) throw new ResponseError('Enter a valid email address.', 400)
   const role = ['resident', 'admin', 'super_admin'].includes(body.role) ? body.role : 'resident'
   if (role !== target.role && admin.role !== 'super_admin') throw new ResponseError('Super administrator access required to change account roles.', 403)
+  const isBoardMember = body.isBoardMember === true
+  const isAccMember = body.isAccMember === true
+  if ((isBoardMember !== Boolean(target.isBoardMember) || isAccMember !== Boolean(target.isAccMember))
+    && admin.role !== 'super_admin') throw new ResponseError('Super administrator access required to change committee memberships.', 403)
   if (targetId === admin.id && role !== admin.role) throw new ResponseError('You cannot change your own role.', 400)
   const residentType = ['owner', 'tenant', 'household_member'].includes(body.residentType) ? body.residentType : 'owner'
   const propertyId = Number(body.propertyId)
@@ -1653,12 +1683,13 @@ async function updateUserProfile(request, env, targetId) {
   try {
     await env.DB.batch([
       env.DB.prepare(`UPDATE users SET first_name = ?1, last_name = ?2, email = ?3, phone = ?4,
-        property_id = ?5, resident_type = ?6, role = ?7, updated_at = CURRENT_TIMESTAMP WHERE id = ?8`)
+        property_id = ?5, resident_type = ?6, role = ?7, is_board_member = ?8, is_acc_member = ?9,
+        updated_at = CURRENT_TIMESTAMP WHERE id = ?10`)
         .bind(cleanText(body.firstName, 80, true), cleanText(body.lastName, 80, true), email,
-          cleanText(body.phone, 30), propertyId, residentType, role, targetId),
+          cleanText(body.phone, 30), propertyId, residentType, role, isBoardMember ? 1 : 0, isAccMember ? 1 : 0, targetId),
       env.DB.prepare(`INSERT INTO audit_log (actor_user_id, action, target_type, target_id, details_json)
         VALUES (?1, 'account.profile_changed', 'user', ?2, ?3)`).bind(admin.id, targetId,
-        JSON.stringify({ email, propertyId, residentType, role })),
+        JSON.stringify({ email, propertyId, residentType, role, isBoardMember, isAccMember })),
     ])
   } catch (error) {
     if (String(error).includes('UNIQUE')) throw new ResponseError('That email address is already registered.', 409)
