@@ -235,6 +235,8 @@ async function messageRecipients(env, category) {
   let condition = "role IN ('admin', 'super_admin')"
   if (['general', 'maintenance', 'board'].includes(category)) condition = "is_board_member = 1 OR role = 'super_admin'"
   if (category === 'architectural') condition = "is_acc_member = 1 OR role = 'super_admin'"
+  if (category === 'treasurer') condition = "is_treasurer = 1 OR role = 'super_admin'"
+  if (category === 'amenities') condition = "is_amenities_coordinator = 1 OR role = 'super_admin'"
   const result = await env.DB.prepare(`SELECT email, first_name AS firstName, last_name AS lastName FROM users
     WHERE status = 'active' AND (${condition}) ORDER BY id`).all()
   return result.results.map((user) => ({ email: user.email, name: `${user.firstName} ${user.lastName}`.trim() }))
@@ -377,6 +379,7 @@ async function currentUser(request, env) {
     SELECT users.id, users.email, users.first_name AS firstName,
       users.last_name AS lastName, users.phone, users.role, users.status, users.resident_type AS residentType,
       users.is_board_member AS isBoardMember, users.is_acc_member AS isAccMember,
+      users.is_treasurer AS isTreasurer, users.is_amenities_coordinator AS isAmenitiesCoordinator,
       users.notify_announcements AS notifyAnnouncements, users.notify_events AS notifyEvents,
       users.property_id AS propertyId,
       properties.street_number || ' ' || properties.street_name || ' ' || properties.street_suffix AS address
@@ -404,6 +407,8 @@ async function requireSuperAdmin(request, env) {
 function canAccessMessage(user, category) {
   return user.role === 'super_admin' || ['general', 'maintenance', 'board'].includes(category) && Boolean(user.isBoardMember)
     || category === 'architectural' && Boolean(user.isAccMember)
+    || category === 'treasurer' && Boolean(user.isTreasurer)
+    || category === 'amenities' && Boolean(user.isAmenitiesCoordinator)
 }
 
 async function requireUser(request, env) {
@@ -483,7 +488,7 @@ async function portalDashboard(request, env) {
       attendee_count AS attendeeCount, cleaning_method AS cleaningMethod, notes, status,
       decision_reason AS decisionReason, reviewed_at AS reviewedAt, deposit_status AS depositStatus
       FROM clubhouse_reservations WHERE user_id = ?1 ORDER BY starts_at DESC`).bind(user.id),
-    env.DB.prepare(`SELECT id, category, message, status, created_at AS createdAt
+    env.DB.prepare(`SELECT id, COALESCE(routing_group, category) AS category, message, status, created_at AS createdAt
       FROM contact_messages WHERE user_id = ?1 ORDER BY created_at DESC LIMIT 100`).bind(user.id),
     env.DB.prepare(`SELECT contact_message_replies.id, contact_message_replies.contact_message_id AS messageId,
       contact_message_replies.author_role AS authorRole, contact_message_replies.body,
@@ -571,15 +576,18 @@ async function adminDashboard(request, env) {
       INNER JOIN properties ON properties.id = users.property_id
       ORDER BY clubhouse_reservations.starts_at DESC LIMIT 100`),
     env.DB.prepare(`SELECT contact_messages.id, contact_messages.name, contact_messages.email, contact_messages.phone,
-      contact_messages.category, contact_messages.message, contact_messages.status,
+      COALESCE(contact_messages.routing_group, contact_messages.category) AS category, contact_messages.message, contact_messages.status,
       contact_messages.admin_notes AS adminNotes, contact_messages.created_at AS createdAt,
       CASE WHEN contact_messages.user_id IS NULL THEN 'Public website' ELSE 'Resident portal' END AS source,
       properties.street_number || ' ' || properties.street_name || ' ' || properties.street_suffix AS address
       FROM contact_messages LEFT JOIN properties ON properties.id = contact_messages.property_id
-      WHERE (?1 = 1 OR (?2 = 1 AND contact_messages.category IN ('general', 'maintenance', 'board'))
-        OR (?3 = 1 AND contact_messages.category = 'architectural'))
+      WHERE (?1 = 1 OR (?2 = 1 AND contact_messages.category IN ('general', 'maintenance', 'board') AND contact_messages.routing_group IS NULL)
+        OR (?3 = 1 AND contact_messages.category = 'architectural')
+        OR (?4 = 1 AND contact_messages.routing_group = 'treasurer')
+        OR (?5 = 1 AND contact_messages.routing_group = 'amenities'))
       ORDER BY contact_messages.created_at DESC LIMIT 200`).bind(admin.role === 'super_admin' ? 1 : 0,
-      admin.isBoardMember ? 1 : 0, admin.isAccMember ? 1 : 0),
+      admin.isBoardMember ? 1 : 0, admin.isAccMember ? 1 : 0, admin.isTreasurer ? 1 : 0,
+      admin.isAmenitiesCoordinator ? 1 : 0),
     env.DB.prepare(`SELECT id, contact_message_id AS messageId, author_role AS authorRole, body,
       created_at AS createdAt FROM contact_message_replies ORDER BY created_at`),
     env.DB.prepare(`SELECT id, original_name AS originalName, mime_type AS mimeType, file_size AS fileSize,
@@ -771,7 +779,9 @@ async function createContactMessage(request, env) {
 async function createResidentMessage(request, env) {
   const user = await requireUser(request, env)
   const body = await readJson(request)
-  const category = ['general', 'maintenance', 'architectural', 'board'].includes(body.category) ? body.category : 'general'
+  const category = ['general', 'maintenance', 'architectural', 'board', 'treasurer', 'amenities'].includes(body.category) ? body.category : 'general'
+  const storedCategory = ['treasurer', 'amenities'].includes(category) ? 'general' : category
+  const routingGroup = ['treasurer', 'amenities'].includes(category) ? category : null
   const message = cleanText(body.message, 5000, true)
   const recent = await env.DB.prepare(`SELECT id FROM contact_messages WHERE user_id = ?1
     AND created_at >= datetime('now', '-1 minute') LIMIT 1`).bind(user.id).first()
@@ -779,9 +789,9 @@ async function createResidentMessage(request, env) {
   const id = crypto.randomUUID()
   const name = `${user.firstName} ${user.lastName}`
   await env.DB.batch([
-    env.DB.prepare(`INSERT INTO contact_messages (id, name, email, phone, category, message, user_id, property_id)
-      VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)`).bind(id, name, user.email, user.phone, category, message,
-      user.id, user.propertyId),
+    env.DB.prepare(`INSERT INTO contact_messages (id, name, email, phone, category, message, user_id, property_id, routing_group)
+      VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9)`).bind(id, name, user.email, user.phone, storedCategory, message,
+      user.id, user.propertyId, routingGroup),
     env.DB.prepare(`INSERT INTO communication_log (id, property_id, user_id, direction, channel, recipient_or_sender,
       subject, summary, delivery_status, related_type, related_id) VALUES (?1, ?2, ?3, 'inbound', 'website',
       ?4, ?5, ?6, 'recorded', 'contact', ?7)`).bind(crypto.randomUUID(), user.propertyId, user.id, user.email,
@@ -864,7 +874,7 @@ async function updateContactMessage(request, env, id) {
   const status = ['new', 'read', 'closed'].includes(body.status) ? body.status : null
   if (!status) throw new ResponseError('Select a valid message status.', 400)
   const notes = cleanText(body.adminNotes, 3000)
-  const message = await env.DB.prepare('SELECT category FROM contact_messages WHERE id = ?1').bind(id).first()
+  const message = await env.DB.prepare('SELECT COALESCE(routing_group, category) AS category FROM contact_messages WHERE id = ?1').bind(id).first()
   if (!message) throw new ResponseError('Message not found.', 404)
   if (!canAccessMessage(admin, message.category)) throw new ResponseError('Not permitted.', 403)
   const result = await env.DB.prepare(`UPDATE contact_messages SET status = ?1, admin_notes = ?2,
@@ -912,7 +922,7 @@ async function replyToResidentMessage(request, env, id) {
   const user = await requireUser(request, env)
   const body = await readJson(request)
   const reply = cleanText(body.reply, 5000, true)
-  const message = await env.DB.prepare(`SELECT id, category FROM contact_messages
+  const message = await env.DB.prepare(`SELECT id, COALESCE(routing_group, category) AS category FROM contact_messages
     WHERE id = ?1 AND user_id = ?2`).bind(id, user.id).first()
   if (!message) throw new ResponseError('Message not found.', 404)
   const recent = await env.DB.prepare(`SELECT id FROM contact_message_replies WHERE contact_message_id = ?1
@@ -1190,7 +1200,7 @@ async function propertyDetails(request, env, propertyId) {
       clubhouse_reservations.status, users.first_name || ' ' || users.last_name AS residentName
       FROM clubhouse_reservations INNER JOIN users ON users.id = clubhouse_reservations.user_id
       WHERE users.property_id = ?1 ORDER BY clubhouse_reservations.starts_at DESC LIMIT 100`).bind(propertyId),
-    env.DB.prepare(`SELECT id, name, email, category, message, status, created_at AS createdAt
+    env.DB.prepare(`SELECT id, name, email, COALESCE(routing_group, category) AS category, message, status, created_at AS createdAt
       FROM contact_messages WHERE property_id = ?1 ORDER BY created_at DESC LIMIT 100`).bind(propertyId),
     env.DB.prepare(`SELECT id, user_id AS userId, direction, channel, recipient_or_sender AS correspondent,
       subject, summary, delivery_status AS deliveryStatus, related_type AS relatedType, created_at AS createdAt
@@ -1644,6 +1654,7 @@ async function listUsers(request, env) {
     SELECT users.id, users.email, users.first_name AS firstName, users.last_name AS lastName, users.phone,
       users.role, users.status, users.resident_type AS residentType, users.property_id AS propertyId,
       users.is_board_member AS isBoardMember, users.is_acc_member AS isAccMember,
+      users.is_treasurer AS isTreasurer, users.is_amenities_coordinator AS isAmenitiesCoordinator,
       users.notify_announcements AS notifyAnnouncements, users.notify_events AS notifyEvents, users.created_at AS createdAt,
       properties.street_number || ' ' || properties.street_name || ' ' || properties.street_suffix AS address
     FROM users INNER JOIN properties ON properties.id = users.property_id
@@ -1692,7 +1703,8 @@ async function updateUserProfile(request, env, targetId) {
   const admin = await requireAdmin(request, env)
   const body = await readJson(request)
   const target = await env.DB.prepare(`SELECT id, role, is_board_member AS isBoardMember,
-    is_acc_member AS isAccMember FROM users WHERE id = ?1`).bind(targetId).first()
+    is_acc_member AS isAccMember, is_treasurer AS isTreasurer,
+    is_amenities_coordinator AS isAmenitiesCoordinator FROM users WHERE id = ?1`).bind(targetId).first()
   if (!target) throw new ResponseError('Account not found.', 404)
   if (target.role === 'super_admin' && admin.role !== 'super_admin') throw new ResponseError('Super administrator access required.', 403)
   const email = cleanText(body.email, 254, true).toLowerCase()
@@ -1701,7 +1713,10 @@ async function updateUserProfile(request, env, targetId) {
   if (role !== target.role && admin.role !== 'super_admin') throw new ResponseError('Super administrator access required to change account roles.', 403)
   const isBoardMember = body.isBoardMember === true
   const isAccMember = body.isAccMember === true
-  if ((isBoardMember !== Boolean(target.isBoardMember) || isAccMember !== Boolean(target.isAccMember))
+  const isTreasurer = body.isTreasurer === true
+  const isAmenitiesCoordinator = body.isAmenitiesCoordinator === true
+  if ((isBoardMember !== Boolean(target.isBoardMember) || isAccMember !== Boolean(target.isAccMember)
+    || isTreasurer !== Boolean(target.isTreasurer) || isAmenitiesCoordinator !== Boolean(target.isAmenitiesCoordinator))
     && admin.role !== 'super_admin') throw new ResponseError('Super administrator access required to change committee memberships.', 403)
   if (targetId === admin.id && role !== admin.role) throw new ResponseError('You cannot change your own role.', 400)
   const residentType = ['owner', 'tenant', 'household_member'].includes(body.residentType) ? body.residentType : 'owner'
@@ -1713,12 +1728,13 @@ async function updateUserProfile(request, env, targetId) {
     await env.DB.batch([
       env.DB.prepare(`UPDATE users SET first_name = ?1, last_name = ?2, email = ?3, phone = ?4,
         property_id = ?5, resident_type = ?6, role = ?7, is_board_member = ?8, is_acc_member = ?9,
-        updated_at = CURRENT_TIMESTAMP WHERE id = ?10`)
+        is_treasurer = ?10, is_amenities_coordinator = ?11, updated_at = CURRENT_TIMESTAMP WHERE id = ?12`)
         .bind(cleanText(body.firstName, 80, true), cleanText(body.lastName, 80, true), email,
-          cleanText(body.phone, 30), propertyId, residentType, role, isBoardMember ? 1 : 0, isAccMember ? 1 : 0, targetId),
+          cleanText(body.phone, 30), propertyId, residentType, role, isBoardMember ? 1 : 0, isAccMember ? 1 : 0,
+          isTreasurer ? 1 : 0, isAmenitiesCoordinator ? 1 : 0, targetId),
       env.DB.prepare(`INSERT INTO audit_log (actor_user_id, action, target_type, target_id, details_json)
         VALUES (?1, 'account.profile_changed', 'user', ?2, ?3)`).bind(admin.id, targetId,
-        JSON.stringify({ email, propertyId, residentType, role, isBoardMember, isAccMember })),
+        JSON.stringify({ email, propertyId, residentType, role, isBoardMember, isAccMember, isTreasurer, isAmenitiesCoordinator })),
     ])
   } catch (error) {
     if (String(error).includes('UNIQUE')) throw new ResponseError('That email address is already registered.', 409)
