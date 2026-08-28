@@ -456,11 +456,12 @@ async function requireSuperAdmin(request, env) {
   return user
 }
 
-function canAccessMessage(user, category) {
-  return user.role === 'super_admin' || ['general', 'maintenance', 'board'].includes(category) && Boolean(user.isBoardMember)
-    || category === 'architectural' && Boolean(user.isAccMember)
-    || category === 'treasurer' && Boolean(user.isTreasurer)
-    || category === 'amenities' && Boolean(user.isAmenitiesCoordinator)
+export function canAccessMessage(user, category) {
+  return user.role === 'super_admin'
+    || (['general', 'maintenance', 'board'].includes(category) && Boolean(user.isBoardMember))
+    || (category === 'architectural' && Boolean(user.isAccMember))
+    || (category === 'treasurer' && Boolean(user.isTreasurer))
+    || (category === 'amenities' && Boolean(user.isAmenitiesCoordinator))
 }
 
 async function requireUser(request, env) {
@@ -962,7 +963,8 @@ async function replyToContactMessage(request, env, id) {
   const admin = await requireAdmin(request, env)
   const body = await readJson(request)
   const reply = cleanText(body.reply, 5000, true)
-  const message = await env.DB.prepare(`SELECT id, name, email, category, message, user_id AS userId,
+  const message = await env.DB.prepare(`SELECT id, name, email, COALESCE(routing_group, category) AS category,
+    message, user_id AS userId,
     property_id AS propertyId FROM contact_messages WHERE id = ?1`).bind(id).first()
   if (!message) throw new ResponseError('Message not found.', 404)
   if (!canAccessMessage(admin, message.category)) throw new ResponseError('Not permitted.', 403)
@@ -1321,7 +1323,7 @@ async function updateProperty(request, env, propertyId) {
 }
 
 async function propertyDetails(request, env, propertyId) {
-  await requireAdmin(request, env)
+  const admin = await requireAdmin(request, env)
   const property = await env.DB.prepare(`SELECT properties.id,
     properties.street_number || ' ' || properties.street_name || ' ' || properties.street_suffix AS address,
     properties.city, properties.state, properties.postal_code AS postalCode, properties.status,
@@ -1339,10 +1341,26 @@ async function propertyDetails(request, env, propertyId) {
       FROM clubhouse_reservations INNER JOIN users ON users.id = clubhouse_reservations.user_id
       WHERE users.property_id = ?1 ORDER BY clubhouse_reservations.starts_at DESC LIMIT 100`).bind(propertyId),
     env.DB.prepare(`SELECT id, name, email, COALESCE(routing_group, category) AS category, message, status, created_at AS createdAt
-      FROM contact_messages WHERE property_id = ?1 ORDER BY created_at DESC LIMIT 100`).bind(propertyId),
+      FROM contact_messages WHERE property_id = ?1
+        AND (?2 = 1 OR (?3 = 1 AND COALESCE(routing_group, category) IN ('general', 'maintenance', 'board'))
+          OR (?4 = 1 AND COALESCE(routing_group, category) = 'architectural')
+          OR (?5 = 1 AND COALESCE(routing_group, category) = 'treasurer')
+          OR (?6 = 1 AND COALESCE(routing_group, category) = 'amenities'))
+      ORDER BY created_at DESC LIMIT 100`).bind(propertyId, admin.role === 'super_admin' ? 1 : 0,
+      admin.isBoardMember ? 1 : 0, admin.isAccMember ? 1 : 0, admin.isTreasurer ? 1 : 0,
+      admin.isAmenitiesCoordinator ? 1 : 0),
     env.DB.prepare(`SELECT id, user_id AS userId, direction, channel, recipient_or_sender AS correspondent,
       subject, summary, delivery_status AS deliveryStatus, related_type AS relatedType, created_at AS createdAt
-      FROM communication_log WHERE property_id = ?1 ORDER BY created_at DESC LIMIT 200`).bind(propertyId),
+      FROM communication_log WHERE property_id = ?1
+        AND (related_type NOT IN ('contact', 'contact_reply') OR related_id IN (
+          SELECT id FROM contact_messages WHERE property_id = ?1
+            AND (?2 = 1 OR (?3 = 1 AND COALESCE(routing_group, category) IN ('general', 'maintenance', 'board'))
+              OR (?4 = 1 AND COALESCE(routing_group, category) = 'architectural')
+              OR (?5 = 1 AND COALESCE(routing_group, category) = 'treasurer')
+              OR (?6 = 1 AND COALESCE(routing_group, category) = 'amenities'))
+        )) ORDER BY created_at DESC LIMIT 200`).bind(propertyId, admin.role === 'super_admin' ? 1 : 0,
+      admin.isBoardMember ? 1 : 0, admin.isAccMember ? 1 : 0, admin.isTreasurer ? 1 : 0,
+      admin.isAmenitiesCoordinator ? 1 : 0),
     env.DB.prepare(`SELECT pool_access_cards.id, pool_access_cards.card_number AS cardNumber,
       pool_access_cards.assigned_user_id AS assignedUserId, pool_access_cards.status, pool_access_cards.notes,
       pool_access_cards.issued_at AS issuedAt, pool_access_cards.updated_at AS updatedAt,
