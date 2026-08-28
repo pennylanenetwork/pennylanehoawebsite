@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict'
 import test from 'node:test'
-import { canAccessMessage } from '../worker/index.js'
+import { canAccessMessage, canManageDeposits, canManageReservations } from '../worker/index.js'
 
 const user = (fields = {}) => ({
   role: 'admin',
@@ -43,4 +43,20 @@ test('an unassigned administrator cannot access routed conversations', () => {
   for (const category of ['general', 'maintenance', 'board', 'architectural', 'treasurer', 'amenities']) {
     assert.equal(canAccessMessage(administrator, category), false)
   }
+})
+
+test('reservation approval is available to administrators and amenities coordinators', () => {
+  assert.equal(canManageReservations(user({ role: 'admin' })), true)
+  assert.equal(canManageReservations(user({ role: 'super_admin' })), true)
+  assert.equal(canManageReservations(user({ role: 'resident', isAmenitiesCoordinator: true })), true)
+  assert.equal(canManageReservations(user({ role: 'resident', isTreasurer: true })), false)
+  assert.equal(canManageReservations(user({ role: 'resident' })), false)
+})
+
+test('deposit decisions are limited to the three assigned authorities', () => {
+  assert.equal(canManageDeposits(user({ role: 'super_admin' })), true)
+  assert.equal(canManageDeposits(user({ role: 'resident', isAmenitiesCoordinator: true })), true)
+  assert.equal(canManageDeposits(user({ role: 'resident', isTreasurer: true })), true)
+  assert.equal(canManageDeposits(user({ role: 'admin' })), false)
+  assert.equal(canManageDeposits(user()), false)
 })

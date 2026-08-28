@@ -105,18 +105,29 @@ export default function Admin() {
   const [accountQuery, setAccountQuery] = useState('')
 
   async function load() {
-    const [{ user: currentUser }, { users }, dashboard] = await Promise.all([api('/api/auth/session'), api('/api/admin/users'), api('/api/admin/dashboard')])
+    const { user: currentUser } = await api('/api/auth/session')
+    const fullAdmin = ['admin', 'super_admin'].includes(currentUser.role)
+    const [dashboard, { users }] = await Promise.all([
+      api('/api/admin/dashboard'),
+      fullAdmin ? api('/api/admin/users') : Promise.resolve({ users: [] }),
+    ])
     setUser(currentUser)
     setAccounts(users)
     setData(dashboard)
   }
 
   useEffect(() => {
-    Promise.all([api('/api/auth/session'), api('/api/admin/users'), api('/api/admin/dashboard')])
-      .then(([{ user: currentUser }, { users }, dashboard]) => {
+    api('/api/auth/session')
+      .then(async ({ user: currentUser }) => {
+        const fullAdmin = ['admin', 'super_admin'].includes(currentUser.role)
+        const [dashboard, { users }] = await Promise.all([
+          api('/api/admin/dashboard'),
+          fullAdmin ? api('/api/admin/users') : Promise.resolve({ users: [] }),
+        ])
         setUser(currentUser)
         setAccounts(users)
         setData(dashboard)
+        if (!fullAdmin) setTab(currentUser.isTreasurer && !currentUser.isAmenitiesCoordinator ? 'reservations' : currentUser.isAmenitiesCoordinator ? 'reservations' : 'messages')
       })
       .catch((requestError) => setError(requestError.message))
   }, [])
@@ -383,7 +394,14 @@ export default function Admin() {
     }
   }
 
-  const tabs = ['overview', 'accounts', 'properties', 'access', 'in the know', 'quick links', 'announcements', 'events', 'documents', 'photos', 'reservations', 'messages']
+  const fullAdmin = ['admin', 'super_admin'].includes(user?.role)
+  const canManageReservations = fullAdmin || Boolean(user?.isAmenitiesCoordinator)
+  const canManageDeposits = user?.role === 'super_admin' || Boolean(user?.isTreasurer) || Boolean(user?.isAmenitiesCoordinator)
+  const canViewReservations = canManageReservations || Boolean(user?.isTreasurer)
+  const canViewMessages = fullAdmin || Boolean(user?.isBoardMember) || Boolean(user?.isAccMember) || Boolean(user?.isTreasurer) || Boolean(user?.isAmenitiesCoordinator)
+  const tabs = fullAdmin
+    ? ['overview', 'accounts', 'properties', 'access', 'in the know', 'quick links', 'announcements', 'events', 'documents', 'photos', 'reservations', 'messages']
+    : [...(canViewReservations ? ['reservations'] : []), ...(canViewMessages ? ['messages'] : [])]
   const normalizedPropertyQuery = propertyQuery.trim().toLowerCase()
   const visibleProperties = data.properties.filter((property) => `${property.address} ${property.residentNames || ''}`.toLowerCase().includes(normalizedPropertyQuery))
   const normalizedAccountQuery = accountQuery.trim().toLowerCase()
@@ -452,7 +470,7 @@ export default function Admin() {
           </p>
         )}
 
-        {tab === 'overview' && <AdminOverview accounts={accounts} data={data} onOpen={setTab} />}
+        {tab === 'overview' && fullAdmin && <AdminOverview accounts={accounts} data={data} onOpen={setTab} />}
 
         {tab === 'accounts' && (
           <section>
@@ -746,10 +764,10 @@ export default function Admin() {
 
         {tab === 'reservations' && (
           <div>
-            <ClubhouseControls settings={data.clubhouse} blackouts={data.blackouts} onSave={saveClubhouseSettings} onAddBlackout={addBlackout} onDeleteBlackout={(id) => remove('clubhouse/blackouts', id, 'Remove this clubhouse blackout period?')} />
+            {canManageReservations && <ClubhouseControls settings={data.clubhouse} blackouts={data.blackouts} onSave={saveClubhouseSettings} onAddBlackout={addBlackout} onDeleteBlackout={(id) => remove('clubhouse/blackouts', id, 'Remove this clubhouse blackout period?')} />}
             <div className="reservation-admin-list">
               {data.reservations.map((item) => (
-                <ReservationReview key={item.id} item={item} onDecide={decideReservation} onDeposit={user?.role === 'super_admin' ? decideDeposit : null} onCancel={() => remove('reservations', item.id, 'Cancel this clubhouse reservation?')} onDelete={user?.role === 'super_admin' ? () => remove('reservations', `${item.id}/permanent`, 'Permanently delete this reservation and its calendar event? This cannot be undone.') : null} />
+                <ReservationReview key={item.id} item={item} onDecide={canManageReservations ? decideReservation : null} onDeposit={canManageDeposits ? decideDeposit : null} onCancel={canManageReservations ? () => remove('reservations', item.id, 'Cancel this clubhouse reservation?') : null} onDelete={user?.role === 'super_admin' ? () => remove('reservations', `${item.id}/permanent`, 'Permanently delete this reservation and its calendar event? This cannot be undone.') : null} />
               ))}
               {data.reservations.length === 0 && <p className="empty-state">No clubhouse reservation requests yet.</p>}
             </div>
@@ -1175,7 +1193,7 @@ function ReservationReview({ item, onDecide, onDeposit, onCancel, onDelete }) {
       )}
       <div className="deposit-admin-status"><strong>Security deposit</strong><span className={`status status-${item.depositStatus}`}>{item.depositStatus?.replace('_', ' ')}</span><small>$100.00 charge | $3.20 nonrefundable fee | $96.80 refundable</small>{item.depositDecisionReason && <p>{item.depositDecisionReason}</p>}</div>
       {item.depositStatus === 'held' && onDeposit && <div className="deposit-actions"><label>Reason or inspection note<textarea maxLength="1000" value={depositReason} onChange={(event) => setDepositReason(event.target.value)} /></label><button type="button" className="primary-button" onClick={() => onDeposit(item.id, 'refund', depositReason)}>Refund $96.80</button><button type="button" className="row-delete" disabled={!depositReason.trim()} onClick={() => onDeposit(item.id, 'retain', depositReason)}>Retain deposit</button></div>}
-      {item.status === 'pending' && (
+      {item.status === 'pending' && onDecide && (
         <>
           <div className="override-controls">
             <label className="rules-check">
@@ -1216,7 +1234,7 @@ function ReservationReview({ item, onDecide, onDeposit, onCancel, onDelete }) {
           </div>
         </>
       )}
-      {item.status === 'approved' && (
+      {item.status === 'approved' && onCancel && (
         <button type="button" className="row-delete" onClick={onCancel}>
           Cancel reservation
         </button>

@@ -231,6 +231,12 @@ async function activeAdminRecipients(env) {
   return result.results.map((admin) => ({ email: admin.email, name: `${admin.firstName} ${admin.lastName}`.trim() }))
 }
 
+async function reservationManagerRecipients(env) {
+  const result = await env.DB.prepare(`SELECT email, first_name AS firstName, last_name AS lastName FROM users
+    WHERE status = 'active' AND (role IN ('admin', 'super_admin') OR is_amenities_coordinator = 1) ORDER BY id`).all()
+  return result.results.map((user) => ({ email: user.email, name: `${user.firstName} ${user.lastName}`.trim() }))
+}
+
 async function messageRecipients(env, category) {
   let condition = "role IN ('admin', 'super_admin')"
   if (['general', 'maintenance', 'board'].includes(category)) condition = "is_board_member = 1 OR role = 'super_admin'"
@@ -261,7 +267,7 @@ async function reservationNotificationDetails(env, reservationId) {
 }
 
 async function notifyReservationAdmins(env, user, reservation) {
-  const recipients = await activeAdminRecipients(env)
+  const recipients = await reservationManagerRecipients(env)
   const residentName = `${user.firstName} ${user.lastName}`.trim()
   await sendTransactionalEmail(env, recipients, `Clubhouse request from ${residentName}`,
     `<p>A new clubhouse reservation request is awaiting review.</p><p><strong>${escapeHtml(reservation.eventName)}</strong><br>${escapeHtml(reservation.startsAt)} through ${escapeHtml(reservation.endsAt)}<br>${reservation.attendeeCount} expected attendees</p><p>Submitted by ${escapeHtml(residentName)}. Sign in to the HOA administration dashboard to approve or deny it.</p>`,
@@ -530,6 +536,41 @@ async function requireAdmin(request, env) {
   return user
 }
 
+function hasStaffAccess(user) {
+  return ['admin', 'super_admin'].includes(user.role) || Boolean(user.isBoardMember) || Boolean(user.isAccMember)
+    || Boolean(user.isTreasurer) || Boolean(user.isAmenitiesCoordinator)
+}
+
+async function requireStaff(request, env) {
+  const user = await requireUser(request, env)
+  if (!hasStaffAccess(user)) throw new ResponseError('HOA staff access required.', 403)
+  return user
+}
+
+export function canManageReservations(user) {
+  return ['admin', 'super_admin'].includes(user.role) || Boolean(user.isAmenitiesCoordinator)
+}
+
+async function requireReservationManager(request, env) {
+  const user = await requireUser(request, env)
+  if (!canManageReservations(user)) {
+    throw new ResponseError('Reservation manager access required.', 403)
+  }
+  return user
+}
+
+export function canManageDeposits(user) {
+  return user.role === 'super_admin' || Boolean(user.isTreasurer) || Boolean(user.isAmenitiesCoordinator)
+}
+
+async function requireDepositManager(request, env) {
+  const user = await requireUser(request, env)
+  if (!canManageDeposits(user)) {
+    throw new ResponseError('Deposit manager access required.', 403)
+  }
+  return user
+}
+
 async function requireSuperAdmin(request, env) {
   const user = await requireUser(request, env)
   if (user.role !== 'super_admin') throw new ResponseError('Super administrator access required.', 403)
@@ -696,7 +737,10 @@ async function publicContent(env) {
 }
 
 async function adminDashboard(request, env) {
-  const admin = await requireAdmin(request, env)
+  const admin = await requireStaff(request, env)
+  const fullAdmin = ['admin', 'super_admin'].includes(admin.role)
+  const canViewReservations = fullAdmin || Boolean(admin.isTreasurer) || Boolean(admin.isAmenitiesCoordinator)
+  const canManageClubhouse = fullAdmin || Boolean(admin.isAmenitiesCoordinator)
   const [properties, phases, announcements, events, documents, reservations, messages, messageReplies, photos, guests, poolCards,
     clubhouse, blackouts, quickLinks] = await env.DB.batch([
     env.DB.prepare(`SELECT properties.id, properties.street_number || ' ' || properties.street_name || ' ' || properties.street_suffix AS address,
@@ -778,11 +822,13 @@ async function adminDashboard(request, env) {
     result[reply.messageId].push(reply)
     return result
   }, {})
-  return json({ properties: properties.results, phases: phases.results, announcements: announcements.results,
-    events: events.results, documents: documents.results, reservations: reservations.results,
+  return json({ properties: fullAdmin ? properties.results : [], phases: fullAdmin ? phases.results : [],
+    announcements: fullAdmin ? announcements.results : [], events: fullAdmin ? events.results : [],
+    documents: fullAdmin ? documents.results : [], reservations: canViewReservations ? reservations.results : [],
     messages: messages.results.map((message) => ({ ...message, replies: repliesByMessage[message.id] || [] })),
-    photos: photos.results, guests: guests.results, poolCards: poolCards.results,
-    clubhouse: clubhouse.results[0], blackouts: blackouts.results, quickLinks: quickLinks.results })
+    photos: fullAdmin ? photos.results : [], guests: fullAdmin ? guests.results : [],
+    poolCards: fullAdmin ? poolCards.results : [], clubhouse: canManageClubhouse ? clubhouse.results[0] : null,
+    blackouts: canManageClubhouse ? blackouts.results : [], quickLinks: fullAdmin ? quickLinks.results : [] })
 }
 
 async function publicGallery(env) {
@@ -1025,7 +1071,7 @@ async function revokeGuestRegistration(request, env, id) {
 }
 
 async function updateContactMessage(request, env, id) {
-  const admin = await requireAdmin(request, env)
+  const admin = await requireStaff(request, env)
   const body = await readJson(request)
   const status = ['new', 'read', 'closed'].includes(body.status) ? body.status : null
   if (!status) throw new ResponseError('Select a valid message status.', 400)
@@ -1040,7 +1086,7 @@ async function updateContactMessage(request, env, id) {
 }
 
 async function replyToContactMessage(request, env, id) {
-  const admin = await requireAdmin(request, env)
+  const admin = await requireStaff(request, env)
   const body = await readJson(request)
   const reply = cleanText(body.reply, 5000, true)
   const message = await env.DB.prepare(`SELECT contact_messages.id, contact_messages.name, contact_messages.email,
@@ -1546,7 +1592,7 @@ async function updatePoolCard(request, env, id) {
 }
 
 async function updateClubhouseSettings(request, env) {
-  const admin = await requireAdmin(request, env)
+  const admin = await requireReservationManager(request, env)
   const body = await readJson(request)
   const opensAt = String(body.opensAt || '')
   const closesAt = String(body.closesAt || '')
@@ -1573,7 +1619,7 @@ async function updateClubhouseSettings(request, env) {
 }
 
 async function createClubhouseBlackout(request, env) {
-  const admin = await requireAdmin(request, env)
+  const admin = await requireReservationManager(request, env)
   const body = await readJson(request)
   const range = validDateRange(body.startsAt, body.endsAt)
   const id = crypto.randomUUID()
@@ -1590,7 +1636,7 @@ async function createClubhouseBlackout(request, env) {
 }
 
 async function deleteClubhouseBlackout(request, env, id) {
-  const admin = await requireAdmin(request, env)
+  const admin = await requireReservationManager(request, env)
   const blackout = await env.DB.prepare('SELECT title FROM clubhouse_blackouts WHERE id = ?1').bind(id).first()
   if (!blackout) throw new ResponseError('Blackout period not found.', 404)
   await env.DB.batch([
@@ -1706,7 +1752,7 @@ async function createReservation(request, env) {
 }
 
 async function decideReservation(request, env, reservationId) {
-  const admin = await requireAdmin(request, env)
+  const admin = await requireReservationManager(request, env)
   const body = await readJson(request)
   const decision = body.decision
   if (!['approve', 'deny'].includes(decision)) throw new ResponseError('Select approve or deny.', 400)
@@ -1761,7 +1807,9 @@ async function cancelReservation(request, env, reservationId) {
   const user = await requireUser(request, env)
   const reservation = await env.DB.prepare('SELECT id, event_id AS eventId, user_id AS userId, status, deposit_status AS depositStatus FROM clubhouse_reservations WHERE id = ?1').bind(reservationId).first()
   if (!reservation) throw new ResponseError('Reservation not found.', 404)
-  if (reservation.userId !== user.id && !['admin', 'super_admin'].includes(user.role)) throw new ResponseError('Not permitted.', 403)
+  if (reservation.userId !== user.id && !['admin', 'super_admin'].includes(user.role) && !user.isAmenitiesCoordinator) {
+    throw new ResponseError('Not permitted.', 403)
+  }
   if (reservation.status === 'cancelled') return json({ status: 'cancelled' })
   if (reservation.depositStatus === 'held') throw new ResponseError('Resolve the paid security deposit before cancelling this reservation.', 409)
   if (!['pending', 'approved'].includes(reservation.status)) throw new ResponseError('This reservation can no longer be cancelled.', 409)
@@ -1840,7 +1888,7 @@ async function stripeWebhook(request, env) {
 }
 
 async function decideDeposit(request, env, reservationId) {
-  const admin = await requireSuperAdmin(request, env)
+  const admin = await requireDepositManager(request, env)
   const body = await readJson(request)
   const action = body.action
   const reason = cleanText(body.reason, 1000)

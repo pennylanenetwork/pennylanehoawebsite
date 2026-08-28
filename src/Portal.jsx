@@ -68,6 +68,7 @@ export function TurnstileWidget({ onToken, resetKey }) {
 }
 
 function PortalHeader({ user }) {
+  const hasStaffAccess = user && (user.role !== 'resident' || user.isBoardMember || user.isAccMember || user.isTreasurer || user.isAmenitiesCoordinator)
   return (
     <header className="portal-header">
       <a className="brand" href="/" aria-label="Penny Lane HOA home">
@@ -76,7 +77,7 @@ function PortalHeader({ user }) {
           Penny Lane <em>HOA</em>
         </span>
       </a>
-      {user?.role !== 'resident' ? (
+      {hasStaffAccess ? (
         <nav className="portal-view-nav" aria-label="Switch portal view">
           <a className="active" href="/portal">
             Resident portal
