@@ -2338,6 +2338,7 @@ async function exportPoolCardsCsv(request, env) {
 
 async function handleApi(request, env) {
   const url = new URL(request.url)
+  if (!url.pathname.startsWith('/api/')) return env.ASSETS.fetch(request)
   if (request.method === 'POST' && url.pathname === '/api/stripe/webhook') return stripeWebhook(request, env)
   if (['POST', 'PUT', 'PATCH', 'DELETE'].includes(request.method) && !requireSameOrigin(request)) {
     return json({ error: 'Invalid request origin.' }, { status: 403 })
@@ -2447,6 +2448,12 @@ async function handleApi(request, env) {
 
 export default {
   async fetch(request, env) {
+    const url = new URL(request.url)
+    if (url.hostname === 'www.pennylanehoa.net') {
+      url.hostname = 'pennylanehoa.net'
+      return Response.redirect(url.toString(), 308)
+    }
+
     try {
       return await handleApi(request, env)
     } catch (error) {

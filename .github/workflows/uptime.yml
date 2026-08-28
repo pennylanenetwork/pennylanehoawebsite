@@ -17,7 +17,7 @@ jobs:
         shell: bash
         run: |
           curl --fail --silent --show-error --retry 2 --max-time 20 \
-            "https://penny-lane-hoa-website.plhoa-website.workers.dev/" > /dev/null
+            "https://pennylanehoa.net/" > /dev/null
           response="$(curl --fail --silent --show-error --retry 2 --max-time 20 \
-            "https://penny-lane-hoa-website.plhoa-website.workers.dev/api/health")"
+            "https://pennylanehoa.net/api/health")"
           echo "${response}" | grep -q '"status":"ok"'

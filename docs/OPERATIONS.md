@@ -9,7 +9,9 @@
 - Worker: `penny-lane-hoa-website`
 - D1 database: `penny-lane-hoa` (`6a94dac5-60bb-4704-8e19-f29f46abb779`)
 - Private R2 bucket: `penny-lane-hoa-documents`
-- Health URL: `https://penny-lane-hoa-website.plhoa-website.workers.dev/api/health`
+- Production URL: `https://pennylanehoa.net`
+- Health URL: `https://pennylanehoa.net/api/health`
+- Staging/fallback URL: `https://penny-lane-hoa-website.plhoa-website.workers.dev`
 
 Do not put API tokens, OAuth secrets, Stripe keys, email credentials, or recovery codes in this repository.
 
@@ -88,4 +90,4 @@ The `Website health` GitHub workflow checks the public homepage and D1-backed `/
 
 Cloudflare Worker observability is enabled in `wrangler.jsonc`. For application errors, open **Workers & Pages > penny-lane-hoa-website > Observability > Logs** and filter for errors or the structured `Unhandled API error` message. Also configure a Cloudflare notification for elevated Worker error rate if that notification type is available on the account.
 
-When the custom domain becomes primary, update the two URLs in `.github/workflows/uptime.yml` to `https://pennylanehoa.net/` and `https://pennylanehoa.net/api/health`.
+The uptime workflow monitors `https://pennylanehoa.net/` and `https://pennylanehoa.net/api/health`. The `workers.dev` hostname remains enabled as a staging and emergency fallback endpoint.
