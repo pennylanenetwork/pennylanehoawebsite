@@ -104,6 +104,7 @@ export default function Admin() {
   const [propertyQuery, setPropertyQuery] = useState('')
   const [accountQuery, setAccountQuery] = useState('')
   const [propertyEditorOpen, setPropertyEditorOpen] = useState(false)
+  const [openMessageId, setOpenMessageId] = useState(null)
 
   async function load() {
     const { user: currentUser } = await api('/api/auth/session')
@@ -759,7 +760,7 @@ export default function Admin() {
         {tab === 'messages' && (
           <div className="message-admin-list">
             {data.messages.map((item) => (
-              <MessageReview key={item.id} item={item} onUpdate={updateMessage} onReply={replyToMessage} onDelete={user?.role === 'super_admin' ? () => remove('messages', item.id, 'Permanently delete this message conversation and its communication history?') : null} />
+              <MessageReview key={item.id} item={item} expanded={openMessageId === item.id} onToggle={() => setOpenMessageId(openMessageId === item.id ? null : item.id)} onUpdate={updateMessage} onReply={replyToMessage} onDelete={user?.role === 'super_admin' ? () => remove('messages', item.id, 'Permanently delete this message conversation and its communication history?') : null} />
             ))}
             {data.messages.length === 0 && <p className="empty-state">No contact messages yet.</p>}
           </div>
@@ -1261,26 +1262,21 @@ function ReservationReview({ item, onDecide, onDeposit, onCancel, onDelete }) {
   )
 }
 
-function MessageReview({ item, onUpdate, onReply, onDelete }) {
+function MessageReview({ item, expanded, onToggle, onUpdate, onReply, onDelete }) {
   const [notes, setNotes] = useState(item.adminNotes || '')
   const [reply, setReply] = useState('')
   const [sending, setSending] = useState(false)
+  const statusLabel = item.status === 'new' ? 'Unread' : item.status === 'read' ? 'Read' : 'Closed'
   return (
-    <article className={`message-review status-border-${item.status}`}>
-      <header>
-        <div>
-          <strong>{item.name}</strong>
-          <small>
-            <a href={`mailto:${item.email}`}>{item.email}</a>
-            {item.phone ? ` | ${item.phone}` : ''}
-            {item.address ? ` | ${item.address}` : ''}
-          </small>
-        </div>
-        <span className={`status status-${item.status}`}>{item.status}</span>
-      </header>
-      <p className="message-category">
-        {item.source} | {item.category} | {dateTime(item.createdAt)}
-      </p>
+    <article className={`message-review status-border-${item.status}${expanded ? ' is-expanded' : ''}`}>
+      <button type="button" className="message-summary" onClick={onToggle} aria-expanded={expanded}>
+        <span className="message-summary-identity"><strong>{item.name}</strong><small>{item.address || item.source} | {item.category}</small></span>
+        <time>{dateTime(item.createdAt)}</time>
+        <span className={`status status-${item.status}`}>{statusLabel}</span>
+        <span className="message-summary-toggle" aria-hidden="true">{expanded ? '-' : '+'}</span>
+      </button>
+      {expanded && <div className="message-review-body">
+      <p className="message-contact"><a href={`mailto:${item.email}`}>{item.email}</a>{item.phone ? ` | ${item.phone}` : ''} | {item.source}</p>
       <div className="message-thread admin-message-thread">
         <div className="thread-entry from-resident">
           <small>{item.name}</small>
@@ -1316,12 +1312,8 @@ function MessageReview({ item, onUpdate, onReply, onDelete }) {
         <textarea maxLength="3000" value={notes} onChange={(event) => setNotes(event.target.value)} />
       </label>
       <div className="row-actions">
-        <button type="button" onClick={() => onUpdate(item.id, 'read', notes)}>
-          Mark read
-        </button>
-        <button type="button" onClick={() => onUpdate(item.id, 'closed', notes)}>
-          Close
-        </button>
+        {item.status === 'new' && <button type="button" onClick={() => onUpdate(item.id, 'read', notes)}>Mark read</button>}
+        {item.status !== 'closed' && <button type="button" onClick={() => onUpdate(item.id, 'closed', notes)}>Close</button>}
         {item.status === 'closed' && (
           <button type="button" onClick={() => onUpdate(item.id, 'read', notes)}>
             Reopen
@@ -1333,6 +1325,7 @@ function MessageReview({ item, onUpdate, onReply, onDelete }) {
           </button>
         )}
       </div>
+      </div>}
     </article>
   )
 }
