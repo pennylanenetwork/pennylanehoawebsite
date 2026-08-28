@@ -1881,16 +1881,16 @@ async function finalizePaidReservation(env, reservationId, session) {
   const alreadyProcessed = await env.DB.prepare(`SELECT id FROM audit_log
     WHERE action = 'reservation.deposit_paid' AND target_id = ?1 LIMIT 1`).bind(reservationId).first()
   await env.DB.batch([
-    env.DB.prepare(`UPDATE clubhouse_reservations SET stripe_checkout_session_id = ?1,
-      stripe_payment_intent_id = ?2, deposit_status = 'held', deposit_collected_cents = 10000,
-      deposit_paid_at = COALESCE(deposit_paid_at, CURRENT_TIMESTAMP), status = 'approved', event_id = ?3,
-      updated_at = CURRENT_TIMESTAMP WHERE id = ?4 AND deposit_status = 'pending'`)
-      .bind(session.id, session.payment_intent, eventId, reservationId),
     reservation.eventId
       ? env.DB.prepare(`UPDATE events SET status = 'scheduled', updated_at = CURRENT_TIMESTAMP WHERE id = ?1`).bind(eventId)
       : env.DB.prepare(`INSERT INTO events (id, title, description, starts_at, ends_at, audience, event_type, created_by)
         VALUES (?1, ?2, ?3, ?4, ?5, 'members', 'clubhouse', ?6)`).bind(eventId,
         `Clubhouse reserved: ${reservation.eventName}`, reservation.eventType, reservation.startsAt, reservation.endsAt, reservation.userId),
+    env.DB.prepare(`UPDATE clubhouse_reservations SET stripe_checkout_session_id = ?1,
+      stripe_payment_intent_id = ?2, deposit_status = 'held', deposit_collected_cents = 10000,
+      deposit_paid_at = COALESCE(deposit_paid_at, CURRENT_TIMESTAMP), status = 'approved', event_id = ?3,
+      updated_at = CURRENT_TIMESTAMP WHERE id = ?4 AND deposit_status = 'pending'`)
+      .bind(session.id, session.payment_intent, eventId, reservationId),
     env.DB.prepare(`INSERT INTO audit_log (action, target_type, target_id, details_json)
       SELECT 'reservation.deposit_paid', 'reservation', ?1, ?2
       WHERE NOT EXISTS (SELECT 1 FROM audit_log WHERE action = 'reservation.deposit_paid' AND target_id = ?1)`)
