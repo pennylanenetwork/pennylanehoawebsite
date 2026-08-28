@@ -198,7 +198,12 @@ function ResidentHome({ user, onLogout }) {
     setError('')
     try {
       const checkout = await api(`/api/portal/reservations/${id}/deposit-checkout`, { method: 'POST' })
-      window.location.assign(checkout.url)
+      if (checkout.paid) {
+        setNotice('Your deposit is paid and the reservation is approved.')
+        await load()
+      } else {
+        window.location.assign(checkout.url)
+      }
     } catch (requestError) {
       setError(requestError.message)
     }

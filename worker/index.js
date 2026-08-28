@@ -300,6 +300,16 @@ async function stripeRequest(env, path, parameters, idempotencyKey = '') {
   return result
 }
 
+async function stripeGet(env, path) {
+  if (!env.STRIPE_SECRET_KEY) throw new ResponseError('Stripe is not configured.', 503)
+  const response = await fetch(`https://api.stripe.com/v1/${path}`, {
+    headers: { authorization: `Bearer ${env.STRIPE_SECRET_KEY}` },
+  })
+  const result = await response.json()
+  if (!response.ok) throw new ResponseError(result?.error?.message || 'Stripe could not process the request.', 502)
+  return result
+}
+
 function constantTimeHexEqual(left, right) {
   if (left.length !== right.length) return false
   let difference = 0
@@ -1862,6 +1872,41 @@ async function cancelReservation(request, env, reservationId) {
   return json({ status: 'cancelled' })
 }
 
+async function finalizePaidReservation(env, reservationId, session) {
+  const reservation = await env.DB.prepare(`SELECT event_id AS eventId, event_name AS eventName,
+    event_type AS eventType, starts_at AS startsAt, ends_at AS endsAt, user_id AS userId
+    FROM clubhouse_reservations WHERE id = ?1`).bind(reservationId).first()
+  if (!reservation) throw new ResponseError('Reservation not found.', 404)
+  const eventId = reservation.eventId || crypto.randomUUID()
+  const alreadyProcessed = await env.DB.prepare(`SELECT id FROM audit_log
+    WHERE action = 'reservation.deposit_paid' AND target_id = ?1 LIMIT 1`).bind(reservationId).first()
+  await env.DB.batch([
+    env.DB.prepare(`UPDATE clubhouse_reservations SET stripe_checkout_session_id = ?1,
+      stripe_payment_intent_id = ?2, deposit_status = 'held', deposit_collected_cents = 10000,
+      deposit_paid_at = COALESCE(deposit_paid_at, CURRENT_TIMESTAMP), status = 'approved', event_id = ?3,
+      updated_at = CURRENT_TIMESTAMP WHERE id = ?4 AND deposit_status = 'pending'`)
+      .bind(session.id, session.payment_intent, eventId, reservationId),
+    reservation.eventId
+      ? env.DB.prepare(`UPDATE events SET status = 'scheduled', updated_at = CURRENT_TIMESTAMP WHERE id = ?1`).bind(eventId)
+      : env.DB.prepare(`INSERT INTO events (id, title, description, starts_at, ends_at, audience, event_type, created_by)
+        VALUES (?1, ?2, ?3, ?4, ?5, 'members', 'clubhouse', ?6)`).bind(eventId,
+        `Clubhouse reserved: ${reservation.eventName}`, reservation.eventType, reservation.startsAt, reservation.endsAt, reservation.userId),
+    env.DB.prepare(`INSERT INTO audit_log (action, target_type, target_id, details_json)
+      SELECT 'reservation.deposit_paid', 'reservation', ?1, ?2
+      WHERE NOT EXISTS (SELECT 1 FROM audit_log WHERE action = 'reservation.deposit_paid' AND target_id = ?1)`)
+      .bind(reservationId, JSON.stringify({ checkoutSessionId: session.id, paymentIntentId: session.payment_intent, amount: 10000 })),
+  ])
+  if (!alreadyProcessed) {
+    try {
+      const details = await reservationNotificationDetails(env, reservationId)
+      if (details) await sendTransactionalEmail(env, await depositRecipients(env),
+        `Clubhouse deposit paid: ${details.eventName}`,
+        `<p>A resident paid the clubhouse security deposit.</p><p><strong>Resident:</strong> ${escapeHtml(details.residentName)}<br><strong>Property:</strong> ${escapeHtml(details.address)}<br><strong>Event:</strong> ${escapeHtml(details.eventName)}<br><strong>Schedule:</strong> ${escapeHtml(details.startsAt)} through ${escapeHtml(details.endsAt)}<br><strong>Collected:</strong> $100.00<br><strong>Refundable after inspection:</strong> $96.80</p><p>The $3.20 processing fee is nonrefundable.</p>`,
+        'clubhouse-deposit-paid', null, false)
+    } catch (error) { console.error(JSON.stringify({ message: 'Deposit payment notification failed', reservationId, detail: String(error) })) }
+  }
+}
+
 async function createDepositCheckout(request, env, reservationId) {
   const user = await requireUser(request, env)
   const reservation = await env.DB.prepare(`SELECT id, event_name AS eventName, status, reviewed_at AS reviewedAt,
@@ -1870,6 +1915,14 @@ async function createDepositCheckout(request, env, reservationId) {
     .bind(reservationId, user.id).first()
   if (!reservation) throw new ResponseError('Reservation not found.', 404)
   if (reservation.status !== 'pending' || !reservation.reviewedAt || reservation.depositStatus !== 'pending') throw new ResponseError('This reservation is not awaiting a deposit.', 409)
+  if (reservation.checkoutSessionId) {
+    const existingSession = await stripeGet(env, `checkout/sessions/${encodeURIComponent(reservation.checkoutSessionId)}`)
+    if (existingSession.payment_status === 'paid') {
+      await finalizePaidReservation(env, reservation.id, existingSession)
+      return json({ paid: true })
+    }
+    if (existingSession.status === 'open' && existingSession.url) return json({ url: existingSession.url })
+  }
   const origin = new URL(request.url).origin
   const session = await stripeRequest(env, 'checkout/sessions', {
     mode: 'payment',
@@ -1884,7 +1937,7 @@ async function createDepositCheckout(request, env, reservationId) {
     'metadata[reservation_id]': reservation.id,
     success_url: `${origin}/portal?deposit=success`,
     cancel_url: `${origin}/portal?deposit=cancelled`,
-  }, `clubhouse-checkout-${reservation.id}`)
+  }, `clubhouse-checkout-${reservation.id}-${crypto.randomUUID()}`)
   await env.DB.prepare(`UPDATE clubhouse_reservations SET stripe_checkout_session_id = ?1,
     updated_at = CURRENT_TIMESTAMP WHERE id = ?2`).bind(session.id, reservation.id).run()
   return json({ url: session.url })
@@ -1897,40 +1950,7 @@ async function stripeWebhook(request, env) {
   const object = event.data?.object || {}
   if (event.type === 'checkout.session.completed' && object.payment_status === 'paid') {
     const reservationId = object.metadata?.reservation_id || object.client_reference_id
-    if (reservationId) {
-      const reservation = await env.DB.prepare(`SELECT event_id AS eventId, event_name AS eventName,
-        event_type AS eventType, starts_at AS startsAt, ends_at AS endsAt, user_id AS userId
-        FROM clubhouse_reservations WHERE id = ?1`).bind(reservationId).first()
-      if (!reservation) throw new ResponseError('Reservation not found.', 404)
-      const eventId = reservation.eventId || crypto.randomUUID()
-      const alreadyProcessed = await env.DB.prepare(`SELECT id FROM audit_log
-        WHERE action = 'reservation.deposit_paid' AND target_id = ?1 LIMIT 1`).bind(reservationId).first()
-      await env.DB.batch([
-        env.DB.prepare(`UPDATE clubhouse_reservations SET stripe_checkout_session_id = ?1,
-          stripe_payment_intent_id = ?2, deposit_status = 'held', deposit_collected_cents = 10000,
-          deposit_paid_at = COALESCE(deposit_paid_at, CURRENT_TIMESTAMP), status = 'approved', event_id = ?3,
-          updated_at = CURRENT_TIMESTAMP
-          WHERE id = ?4 AND deposit_status = 'pending'`).bind(object.id, object.payment_intent, eventId, reservationId),
-        reservation.eventId
-          ? env.DB.prepare(`UPDATE events SET status = 'scheduled', updated_at = CURRENT_TIMESTAMP WHERE id = ?1`).bind(eventId)
-          : env.DB.prepare(`INSERT INTO events (id, title, description, starts_at, ends_at, audience, event_type, created_by)
-            VALUES (?1, ?2, ?3, ?4, ?5, 'members', 'clubhouse', ?6)`).bind(eventId,
-            `Clubhouse reserved: ${reservation.eventName}`, reservation.eventType, reservation.startsAt, reservation.endsAt, reservation.userId),
-        env.DB.prepare(`INSERT INTO audit_log (action, target_type, target_id, details_json)
-          SELECT 'reservation.deposit_paid', 'reservation', ?1, ?2
-          WHERE NOT EXISTS (SELECT 1 FROM audit_log WHERE action = 'reservation.deposit_paid' AND target_id = ?1)`)
-          .bind(reservationId, JSON.stringify({ checkoutSessionId: object.id, paymentIntentId: object.payment_intent, amount: 10000 })),
-      ])
-      if (!alreadyProcessed) {
-        try {
-          const details = await reservationNotificationDetails(env, reservationId)
-          if (details) await sendTransactionalEmail(env, await depositRecipients(env),
-            `Clubhouse deposit paid: ${details.eventName}`,
-            `<p>A resident paid the clubhouse security deposit.</p><p><strong>Resident:</strong> ${escapeHtml(details.residentName)}<br><strong>Property:</strong> ${escapeHtml(details.address)}<br><strong>Event:</strong> ${escapeHtml(details.eventName)}<br><strong>Schedule:</strong> ${escapeHtml(details.startsAt)} through ${escapeHtml(details.endsAt)}<br><strong>Collected:</strong> $100.00<br><strong>Refundable after inspection:</strong> $96.80</p><p>The $3.20 processing fee is nonrefundable.</p>`,
-            'clubhouse-deposit-paid', null, false)
-        } catch (error) { console.error(JSON.stringify({ message: 'Deposit payment notification failed', reservationId, detail: String(error) })) }
-      }
-    }
+    if (reservationId) await finalizePaidReservation(env, reservationId, object)
   } else if (event.type === 'checkout.session.expired') {
     await env.DB.prepare(`UPDATE clubhouse_reservations SET stripe_checkout_session_id = NULL,
       updated_at = CURRENT_TIMESTAMP WHERE stripe_checkout_session_id = ?1 AND deposit_status = 'pending'`).bind(object.id).run()
