@@ -600,21 +600,24 @@ async function portalDashboard(request, env) {
 }
 
 async function publicContent(env) {
-  const [announcements, events, documents] = await env.DB.batch([
+  const [announcements, events, documents, quickLinks] = await env.DB.batch([
     env.DB.prepare(`SELECT id, title, body, published_at AS publishedAt FROM announcements
       WHERE audience = 'public' AND published_at <= CURRENT_TIMESTAMP ORDER BY published_at DESC LIMIT 10`),
     env.DB.prepare(`SELECT id, title, description, starts_at AS startsAt, ends_at AS endsAt, event_type AS eventType
       FROM events WHERE audience = 'public' AND status = 'scheduled' AND ends_at >= CURRENT_TIMESTAMP ORDER BY starts_at LIMIT 20`),
     env.DB.prepare(`SELECT id, title, description, document_url AS url, category FROM documents
       WHERE audience = 'public' ORDER BY category, title`),
+    env.DB.prepare(`SELECT id, title, description, url FROM quick_links
+      WHERE status = 'published' ORDER BY sort_order, created_at`),
   ])
-  return json({ announcements: announcements.results, events: events.results, documents: documents.results })
+  return json({ announcements: announcements.results, events: events.results, documents: documents.results,
+    quickLinks: quickLinks.results })
 }
 
 async function adminDashboard(request, env) {
   const admin = await requireAdmin(request, env)
   const [properties, phases, announcements, events, documents, reservations, messages, messageReplies, photos, guests, poolCards,
-    clubhouse, blackouts] = await env.DB.batch([
+    clubhouse, blackouts, quickLinks] = await env.DB.batch([
     env.DB.prepare(`SELECT properties.id, properties.street_number || ' ' || properties.street_name || ' ' || properties.street_suffix AS address,
       properties.status, hoa_phases.name AS phase,
       GROUP_CONCAT(users.first_name || ' ' || users.last_name, ' | ') AS residentNames
@@ -686,6 +689,8 @@ async function adminDashboard(request, env) {
       max_active_per_household AS maxActivePerHousehold FROM clubhouse_settings WHERE id = 1`),
     env.DB.prepare(`SELECT id, title, starts_at AS startsAt, ends_at AS endsAt, notes,
       created_at AS createdAt FROM clubhouse_blackouts ORDER BY starts_at DESC LIMIT 200`),
+    env.DB.prepare(`SELECT id, title, description, url, sort_order AS sortOrder, status,
+      created_at AS createdAt, updated_at AS updatedAt FROM quick_links ORDER BY sort_order, created_at`),
   ])
   const repliesByMessage = messageReplies.results.reduce((result, reply) => {
     if (!result[reply.messageId]) result[reply.messageId] = []
@@ -696,7 +701,7 @@ async function adminDashboard(request, env) {
     events: events.results, documents: documents.results, reservations: reservations.results,
     messages: messages.results.map((message) => ({ ...message, replies: repliesByMessage[message.id] || [] })),
     photos: photos.results, guests: guests.results, poolCards: poolCards.results,
-    clubhouse: clubhouse.results[0], blackouts: blackouts.results })
+    clubhouse: clubhouse.results[0], blackouts: blackouts.results, quickLinks: quickLinks.results })
 }
 
 async function publicGallery(env) {
@@ -1112,6 +1117,69 @@ async function createAnnouncement(request, env) {
     } catch (error) { console.error(JSON.stringify({ message: 'Announcement broadcast failed', announcementId: id, detail: String(error) })) }
   }
   return json({ id }, { status: 201 })
+}
+
+function cleanQuickLinkUrl(value) {
+  const url = cleanText(value, 500, true)
+  if (!/^https:\/\//i.test(url) && !/^\/(?!\/)/.test(url) && !/^#[A-Za-z][\w-]*$/.test(url)) {
+    throw new ResponseError('Use an HTTPS address, a site path beginning with /, or a section beginning with #.', 400)
+  }
+  return url
+}
+
+function quickLinkFields(body) {
+  const sortOrder = Number(body.sortOrder)
+  if (!Number.isInteger(sortOrder) || sortOrder < 0 || sortOrder > 9999) {
+    throw new ResponseError('Display order must be a whole number from 0 through 9999.', 400)
+  }
+  return {
+    title: cleanText(body.title, 120, true),
+    description: cleanText(body.description, 300),
+    url: cleanQuickLinkUrl(body.url),
+    sortOrder,
+    status: body.status === 'draft' ? 'draft' : 'published',
+  }
+}
+
+async function createQuickLink(request, env) {
+  const admin = await requireAdmin(request, env)
+  const fields = quickLinkFields(await readJson(request))
+  const id = crypto.randomUUID()
+  await env.DB.batch([
+    env.DB.prepare(`INSERT INTO quick_links (id, title, description, url, sort_order, status, created_by)
+      VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)`).bind(id, fields.title, fields.description, fields.url,
+      fields.sortOrder, fields.status, admin.id),
+    env.DB.prepare(`INSERT INTO audit_log (actor_user_id, action, target_type, target_id, details_json)
+      VALUES (?1, 'quick_link.created', 'quick_link', ?2, ?3)`).bind(admin.id, id,
+      JSON.stringify({ title: fields.title, url: fields.url })),
+  ])
+  return json({ id }, { status: 201 })
+}
+
+async function updateQuickLink(request, env, id) {
+  const admin = await requireAdmin(request, env)
+  const fields = quickLinkFields(await readJson(request))
+  const result = await env.DB.prepare(`UPDATE quick_links SET title = ?1, description = ?2, url = ?3,
+    sort_order = ?4, status = ?5, updated_at = CURRENT_TIMESTAMP WHERE id = ?6`).bind(fields.title,
+    fields.description, fields.url, fields.sortOrder, fields.status, id).run()
+  if (!result.meta.changes) throw new ResponseError('Quick link not found.', 404)
+  await env.DB.prepare(`INSERT INTO audit_log (actor_user_id, action, target_type, target_id, details_json)
+    VALUES (?1, 'quick_link.updated', 'quick_link', ?2, ?3)`).bind(admin.id, id,
+    JSON.stringify({ title: fields.title, url: fields.url, status: fields.status })).run()
+  return json({ status: 'updated' })
+}
+
+async function deleteQuickLink(request, env, id) {
+  const admin = await requireAdmin(request, env)
+  const link = await env.DB.prepare('SELECT title, url FROM quick_links WHERE id = ?1').bind(id).first()
+  if (!link) throw new ResponseError('Quick link not found.', 404)
+  await env.DB.batch([
+    env.DB.prepare('DELETE FROM quick_links WHERE id = ?1').bind(id),
+    env.DB.prepare(`INSERT INTO audit_log (actor_user_id, action, target_type, target_id, details_json)
+      VALUES (?1, 'quick_link.deleted', 'quick_link', ?2, ?3)`).bind(admin.id, id,
+      JSON.stringify({ title: link.title, url: link.url })),
+  ])
+  return json({ status: 'deleted' })
 }
 
 async function createEvent(request, env) {
@@ -2115,6 +2183,7 @@ async function handleApi(request, env) {
   if (request.method === 'GET' && url.pathname === '/api/admin/dashboard') return adminDashboard(request, env)
   if (request.method === 'POST' && url.pathname === '/api/admin/properties') return createProperty(request, env)
   if (request.method === 'POST' && url.pathname === '/api/admin/announcements') return createAnnouncement(request, env)
+  if (request.method === 'POST' && url.pathname === '/api/admin/quick-links') return createQuickLink(request, env)
   if (request.method === 'POST' && url.pathname === '/api/admin/events') return createEvent(request, env)
   if (request.method === 'POST' && url.pathname === '/api/admin/documents') return createDocument(request, env)
   if (request.method === 'POST' && url.pathname === '/api/admin/documents/upload') return uploadDocument(request, env)
@@ -2135,6 +2204,9 @@ async function handleApi(request, env) {
   const announcementMatch = url.pathname.match(/^\/api\/admin\/announcements\/([^/]+)$/)
   if (announcementMatch && request.method === 'PATCH') return updateAnnouncement(request, env, announcementMatch[1])
   if (announcementMatch && request.method === 'DELETE') return deleteAnnouncement(request, env, announcementMatch[1])
+  const quickLinkMatch = url.pathname.match(/^\/api\/admin\/quick-links\/([^/]+)$/)
+  if (quickLinkMatch && request.method === 'PATCH') return updateQuickLink(request, env, quickLinkMatch[1])
+  if (quickLinkMatch && request.method === 'DELETE') return deleteQuickLink(request, env, quickLinkMatch[1])
   const eventMatch = url.pathname.match(/^\/api\/admin\/events\/([^/]+)$/)
   if (eventMatch && request.method === 'PATCH') return updateEvent(request, env, eventMatch[1])
   if (eventMatch && request.method === 'DELETE') return cancelEvent(request, env, eventMatch[1])

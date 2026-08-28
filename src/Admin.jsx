@@ -32,6 +32,13 @@ const emptyForms = {
     category: 'General',
     audience: 'members',
   },
+  quickLink: {
+    title: '',
+    description: '',
+    url: '',
+    sortOrder: 0,
+    status: 'published',
+  },
 }
 
 function dateTime(value) {
@@ -85,6 +92,7 @@ export default function Admin() {
     poolCards: [],
     clubhouse: null,
     blackouts: [],
+    quickLinks: [],
   })
   const [forms, setForms] = useState(emptyForms)
   const [editing, setEditing] = useState(null)
@@ -374,7 +382,7 @@ export default function Admin() {
     }
   }
 
-  const tabs = ['overview', 'accounts', 'properties', 'access', 'in the know', 'announcements', 'events', 'documents', 'photos', 'reservations', 'messages']
+  const tabs = ['overview', 'accounts', 'properties', 'access', 'in the know', 'quick links', 'announcements', 'events', 'documents', 'photos', 'reservations', 'messages']
   const normalizedPropertyQuery = propertyQuery.trim().toLowerCase()
   const visibleProperties = data.properties.filter((property) => `${property.address} ${property.residentNames || ''}`.toLowerCase().includes(normalizedPropertyQuery))
 
@@ -529,6 +537,46 @@ export default function Admin() {
               .map((item) => (
                 <DataRow key={item.id} title={item.title} detail={dateTime(item.publishedAt)} meta="homepage" actions={<RowActions onEdit={() => beginEdit('publicUpdate', item)} onDelete={() => remove('announcements', item.id, 'Delete this public update?')} />} />
               ))}
+          />
+        )}
+
+        {tab === 'quick links' && (
+          <Workspace
+            title={editing?.kind === 'quickLink' ? 'Edit quick link' : 'Add quick link'}
+            form={
+              <form onSubmit={(event) => submit('quickLink', 'quick-links', event)}>
+                <p className="form-context">Published links appear in the Quick Links section on the public homepage.</p>
+                <label>
+                  Title
+                  <input required maxLength="120" value={forms.quickLink.title} onChange={(event) => updateForm('quickLink', 'title', event.target.value)} />
+                </label>
+                <label>
+                  Description
+                  <textarea maxLength="300" value={forms.quickLink.description} onChange={(event) => updateForm('quickLink', 'description', event.target.value)} />
+                </label>
+                <label>
+                  Destination
+                  <input required maxLength="500" placeholder="https://example.com, /portal, or #contact" value={forms.quickLink.url} onChange={(event) => updateForm('quickLink', 'url', event.target.value)} />
+                </label>
+                <div className="field-row">
+                  <label>
+                    Display order
+                    <input required type="number" min="0" max="9999" value={forms.quickLink.sortOrder} onChange={(event) => updateForm('quickLink', 'sortOrder', Number(event.target.value))} />
+                  </label>
+                  <label>
+                    Visibility
+                    <select value={forms.quickLink.status} onChange={(event) => updateForm('quickLink', 'status', event.target.value)}>
+                      <option value="published">Published</option>
+                      <option value="draft">Draft</option>
+                    </select>
+                  </label>
+                </div>
+                <FormActions editing={editing?.kind === 'quickLink'} label="Save link" onCancel={() => stopEditing('quickLink')} />
+              </form>
+            }
+            rows={data.quickLinks.map((item) => (
+              <DataRow key={item.id} title={item.title} detail={`${item.url} | order ${item.sortOrder}`} meta={item.status} actions={<RowActions onEdit={() => beginEdit('quickLink', item)} onDelete={() => remove('quick-links', item.id, 'Delete this quick link?')} />} />
+            ))}
           />
         )}
 
