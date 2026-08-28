@@ -28,7 +28,7 @@ npx wrangler login
 npm run cf:deploy
 ```
 
-Cloudflare resource bindings for D1, R2, email, and payment secrets will be added as the resident portal and administration features are implemented. Local secrets belong in `.dev.vars`, which is excluded from Git.
+Cloudflare resource bindings for D1, R2, Turnstile, email, OAuth, and payment services are configured for the resident portal and administration features. Local secrets belong in `.dev.vars`, which is excluded from Git.
 
 ## Database migrations
 
@@ -41,3 +41,7 @@ npm run db:migrate:remote
 ```
 
 The initial migration creates HOA phases and 101 active properties. Property write operations will be added only after administrator authentication and authorization are available.
+
+## Operations
+
+Production deployment ownership, D1 backup and restore procedures, emergency administrative recovery, and monitoring are documented in [`docs/OPERATIONS.md`](docs/OPERATIONS.md).

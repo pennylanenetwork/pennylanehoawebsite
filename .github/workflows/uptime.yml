@@ -1,0 +1,23 @@
+name: Website health
+
+on:
+  schedule:
+    - cron: '*/15 * * * *'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  check:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - name: Check website and database health
+        shell: bash
+        run: |
+          curl --fail --silent --show-error --retry 2 --max-time 20 \
+            "https://penny-lane-hoa-website.plhoa-website.workers.dev/" > /dev/null
+          response="$(curl --fail --silent --show-error --retry 2 --max-time 20 \
+            "https://penny-lane-hoa-website.plhoa-website.workers.dev/api/health")"
+          echo "${response}" | grep -q '"status":"ok"'

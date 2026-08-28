@@ -1,0 +1,44 @@
+name: D1 backup
+
+on:
+  schedule:
+    - cron: '20 7 * * 1'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  export:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    env:
+      CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+      CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+      - run: npm ci
+      - name: Export D1
+        shell: bash
+        run: |
+          mkdir -p backups
+          stamp="$(date -u +'%Y-%m-%dT%H-%M-%SZ')"
+          file="backups/penny-lane-hoa-${stamp}.sql"
+          echo "BACKUP_FILE=${file}" >> "$GITHUB_ENV"
+          npx wrangler d1 export penny-lane-hoa --remote --output="${file}"
+      - name: Store private backup in R2
+        shell: bash
+        run: |
+          name="$(basename "${BACKUP_FILE}")"
+          npx wrangler r2 object put "penny-lane-hoa-documents/database-backups/${name}" --file="${BACKUP_FILE}" --content-type="application/sql" --remote
+      - name: Retain a short-term workflow copy
+        uses: actions/upload-artifact@v4
+        with:
+          name: d1-backup-${{ github.run_id }}
+          path: ${{ env.BACKUP_FILE }}
+          retention-days: 30
+          if-no-files-found: error
