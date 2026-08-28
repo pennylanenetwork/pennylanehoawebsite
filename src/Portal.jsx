@@ -119,12 +119,13 @@ function ResidentHome({ user, onLogout }) {
     poolCards: [],
     poolAgreements: [],
     boardMembers: [],
+    clubhouse: null,
   })
   const emptyReservation = {
     eventName: '',
     eventType: '',
-    startsAt: '',
-    endsAt: '',
+    reservationDate: '',
+    timeSlot: 'first_half',
     attendeeCount: '1',
     cleaningMethod: 'self',
     notes: '',
@@ -173,8 +174,6 @@ function ResidentHome({ user, onLogout }) {
         body: JSON.stringify({
           ...reservation,
           attendeeCount: Number(reservation.attendeeCount),
-          startsAt: new Date(reservation.startsAt).toISOString(),
-          endsAt: new Date(reservation.endsAt).toISOString(),
         }),
       })
       setReservation(emptyReservation)
@@ -326,6 +325,18 @@ function ResidentHome({ user, onLogout }) {
       dateStyle: 'medium',
       timeStyle: 'short',
     }).format(new Date(value))
+  const clubhouseMinutes = (value) => { const [hours, minutes] = String(value || '00:00').split(':').map(Number); return hours * 60 + minutes }
+  const displayMinutes = (value) => { const hours = Math.floor(value / 60); const minutes = value % 60; return `${hours % 12 || 12}${minutes ? `:${String(minutes).padStart(2, '0')}` : ''} ${hours < 12 ? 'AM' : 'PM'}` }
+  const opens = clubhouseMinutes(data.clubhouse?.opensAt)
+  const closes = clubhouseMinutes(data.clubhouse?.closesAt)
+  const midpoint = (opens + closes) / 2
+  const firstEnds = Math.floor(midpoint - Number(data.clubhouse?.cleanupBufferMinutes || 0) / 2)
+  const secondStarts = Math.ceil(midpoint + Number(data.clubhouse?.cleanupBufferMinutes || 0) / 2)
+  const slotLabels = data.clubhouse ? {
+    first_half: `First half (${displayMinutes(opens)}-${displayMinutes(firstEnds)})`,
+    second_half: `Second half (${displayMinutes(secondStarts)}-${displayMinutes(closes)})`,
+    whole_day: `Whole day (${displayMinutes(opens)}-${displayMinutes(closes)})`,
+  } : { first_half: 'First half of day', second_half: 'Second half of day', whole_day: 'Whole day' }
   const dateOnly = (value) =>
     new Intl.DateTimeFormat('en-US', {
       dateStyle: 'medium',
@@ -506,34 +517,19 @@ function ResidentHome({ user, onLogout }) {
                 </label>
                 <div className="field-row">
                   <label>
-                    Starts
-                    <input
-                      required
-                      type="datetime-local"
-                      value={reservation.startsAt}
-                      onChange={(event) =>
-                        setReservation({
-                          ...reservation,
-                          startsAt: event.target.value,
-                        })
-                      }
-                    />
+                    Reservation date
+                    <input required type="date" value={reservation.reservationDate} onChange={(event) => setReservation({ ...reservation, reservationDate: event.target.value })} />
                   </label>
                   <label>
-                    Ends
-                    <input
-                      required
-                      type="datetime-local"
-                      value={reservation.endsAt}
-                      onChange={(event) =>
-                        setReservation({
-                          ...reservation,
-                          endsAt: event.target.value,
-                        })
-                      }
-                    />
+                    Reservation period
+                    <select value={reservation.timeSlot} onChange={(event) => setReservation({ ...reservation, timeSlot: event.target.value })}>
+                      <option value="first_half">{slotLabels.first_half}</option>
+                      <option value="second_half">{slotLabels.second_half}</option>
+                      <option value="whole_day">{slotLabels.whole_day}</option>
+                    </select>
                   </label>
                 </div>
+                <p className="form-context">Half-day times are based on the clubhouse operating hours{data.clubhouse ? ` (${data.clubhouse.opensAt} to ${data.clubhouse.closesAt})` : ''}. If you need access before the event for decorating, deliveries, or setup, reserve that setup time as part of your reservation.</p>
                 <label>
                   Expected attendees
                   <input
@@ -953,6 +949,7 @@ function CalendarView({ events }) {
       dateStyle: 'medium',
       timeStyle: 'short',
     }).format(new Date(value))
+  const compactTime = (value) => new Intl.DateTimeFormat('en-US', { hour: 'numeric', minute: '2-digit' }).format(new Date(value)).replace(':00', '')
   const monthLabel = new Intl.DateTimeFormat('en-US', {
     month: 'long',
     year: 'numeric',
@@ -1008,7 +1005,7 @@ function CalendarView({ events }) {
                   <time>{day.getDate()}</time>
                   {dayEvents.slice(0, 3).map((item) => (
                     <a href={`/api/events/${item.id}.ics`} className={`calendar-chip type-${item.eventType}`} key={item.id} title={`${item.title} - download calendar file`}>
-                      {item.eventType === 'clubhouse' ? 'Reserved' : item.title}
+                      {item.eventType === 'clubhouse' ? `Reserved ${compactTime(item.startsAt)}-${compactTime(item.endsAt)}` : item.title}
                     </a>
                   ))}
                   {dayEvents.length > 3 && <small>+{dayEvents.length - 3} more</small>}

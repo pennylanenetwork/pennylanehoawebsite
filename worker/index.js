@@ -625,6 +625,39 @@ function timeMinutes(value) {
   return hours * 60 + minutes
 }
 
+function lindaleLocalToIso(date, minutes) {
+  const [year, month, day] = date.split('-').map(Number)
+  const target = Date.UTC(year, month - 1, day, Math.floor(minutes / 60), minutes % 60)
+  let guess = target
+  for (let index = 0; index < 3; index += 1) {
+    const parts = lindaleDateParts(new Date(guess).toISOString())
+    const represented = Date.UTC(Number(parts.year), Number(parts.month) - 1, Number(parts.day), Number(parts.hour), Number(parts.minute))
+    guess += target - represented
+  }
+  return new Date(guess).toISOString()
+}
+
+export function reservationSlotRange(date, slot, settings) {
+  if (!/^\d{4}-\d{2}-\d{2}$/.test(String(date))) throw new ResponseError('Select a valid reservation date.', 400)
+  const [year, month, day] = date.split('-').map(Number)
+  const calendarDate = new Date(Date.UTC(year, month - 1, day))
+  if (calendarDate.getUTCFullYear() !== year || calendarDate.getUTCMonth() !== month - 1 || calendarDate.getUTCDate() !== day) {
+    throw new ResponseError('Select a valid reservation date.', 400)
+  }
+  if (!['first_half', 'second_half', 'whole_day'].includes(slot)) throw new ResponseError('Select a reservation period.', 400)
+  const opens = timeMinutes(settings.opensAt)
+  const closes = timeMinutes(settings.closesAt)
+  const midpoint = (opens + closes) / 2
+  const firstEnds = Math.floor(midpoint - settings.cleanupBufferMinutes / 2)
+  const secondStarts = Math.ceil(midpoint + settings.cleanupBufferMinutes / 2)
+  if (firstEnds <= opens || secondStarts >= closes) throw new ResponseError('The clubhouse hours cannot support half-day reservations with the current cleanup buffer.', 409)
+  const startMinutes = slot === 'second_half' ? secondStarts : opens
+  const endMinutes = slot === 'first_half' ? firstEnds : closes
+  const range = { startsAt: lindaleLocalToIso(date, startMinutes), endsAt: lindaleLocalToIso(date, endMinutes) }
+  if (new Date(range.startsAt) <= new Date()) throw new ResponseError('Reservations must begin in the future.', 400)
+  return range
+}
+
 async function clubhouseAvailability(env, startsAt, endsAt, excludeReservationId = '') {
   const settings = await clubhouseSettings(env)
   const start = lindaleDateParts(startsAt)
@@ -651,10 +684,13 @@ async function clubhouseAvailability(env, startsAt, endsAt, excludeReservationId
 
 async function portalDashboard(request, env) {
   const user = await requireUser(request, env)
-  const [announcements, events, documents, reservations, messages, messageReplies, guests, household, poolCards, poolAgreements, boardMembers] = await env.DB.batch([
+  const [announcements, events, documents, reservations, messages, messageReplies, guests, household, poolCards, poolAgreements, boardMembers, clubhouse] = await env.DB.batch([
     env.DB.prepare(`SELECT id, title, body, audience, published_at AS publishedAt FROM announcements
       WHERE published_at <= CURRENT_TIMESTAMP ORDER BY published_at DESC LIMIT 20`),
-    env.DB.prepare(`SELECT id, title, description, starts_at AS startsAt, ends_at AS endsAt,
+    env.DB.prepare(`SELECT id,
+      CASE WHEN event_type = 'clubhouse' THEN 'Clubhouse Reserved' ELSE title END AS title,
+      CASE WHEN event_type = 'clubhouse' THEN 'The clubhouse is reserved during this period.' ELSE description END AS description,
+      starts_at AS startsAt, ends_at AS endsAt,
       audience, event_type AS eventType FROM events WHERE status = 'scheduled' AND ends_at >= CURRENT_TIMESTAMP ORDER BY starts_at LIMIT 50`),
     env.DB.prepare(`SELECT id, title, description, document_url AS url, category, audience
       FROM documents ORDER BY category, title`),
@@ -701,6 +737,8 @@ async function portalDashboard(request, env) {
       FROM users WHERE status = 'active' AND is_board_member = 1
       ORDER BY CASE WHEN is_president = 1 THEN 1 WHEN is_vice_president = 1 THEN 2
         WHEN is_secretary = 1 THEN 3 WHEN is_treasurer = 1 THEN 4 ELSE 5 END, last_name, first_name`),
+    env.DB.prepare(`SELECT opens_at AS opensAt, closes_at AS closesAt,
+      cleanup_buffer_minutes AS cleanupBufferMinutes FROM clubhouse_settings WHERE id = 1`),
   ])
   const repliesByMessage = messageReplies.results.reduce((result, reply) => {
     if (!result[reply.messageId]) result[reply.messageId] = []
@@ -718,6 +756,7 @@ async function portalDashboard(request, env) {
     poolCards: poolCards.results,
     poolAgreements: poolAgreements.results,
     boardMembers: boardMembers.results,
+    clubhouse: clubhouse.results[0],
   })
 }
 
@@ -927,13 +966,15 @@ function icsDate(value) {
 
 async function downloadEventCalendar(request, env, id) {
   const event = await env.DB.prepare(`SELECT id, title, description, starts_at AS startsAt, ends_at AS endsAt,
-    audience, status FROM events WHERE id = ?1`).bind(id).first()
+    audience, event_type AS eventType, status FROM events WHERE id = ?1`).bind(id).first()
   if (!event || event.status !== 'scheduled') throw new ResponseError('Event not found.', 404)
   if (event.audience !== 'public') await requireUser(request, env)
+  const title = event.eventType === 'clubhouse' ? 'Clubhouse Reserved' : event.title
+  const description = event.eventType === 'clubhouse' ? 'The clubhouse is reserved during this period.' : event.description
   const body = ['BEGIN:VCALENDAR', 'VERSION:2.0', 'PRODID:-//Penny Lane HOA//Events//EN', 'CALSCALE:GREGORIAN',
     'BEGIN:VEVENT', `UID:${event.id}@pennylanehoa.net`, `DTSTAMP:${icsDate(new Date())}`,
-    `DTSTART:${icsDate(event.startsAt)}`, `DTEND:${icsDate(event.endsAt)}`, `SUMMARY:${icsText(event.title)}`,
-    `DESCRIPTION:${icsText(event.description)}`, 'END:VEVENT', 'END:VCALENDAR', ''].join('\r\n')
+    `DTSTART:${icsDate(event.startsAt)}`, `DTEND:${icsDate(event.endsAt)}`, `SUMMARY:${icsText(title)}`,
+    `DESCRIPTION:${icsText(description)}`, 'END:VEVENT', 'END:VCALENDAR', ''].join('\r\n')
   return new Response(body, { headers: {
     'cache-control': event.audience === 'public' ? 'public, max-age=300' : 'private, no-store',
     'content-disposition': `attachment; filename="penny-lane-event-${event.id}.ics"`,
@@ -1719,8 +1760,8 @@ async function createReservation(request, env) {
   const user = await requireUser(request, env)
   const body = await readJson(request)
   if (body.rulesAcknowledged !== true) throw new ResponseError('You must acknowledge the clubhouse rules.', 400)
-  const range = validDateRange(body.startsAt, body.endsAt, true)
   const settings = await clubhouseSettings(env)
+  const range = reservationSlotRange(body.reservationDate, body.timeSlot, settings)
   if (new Date(range.startsAt).getTime() > Date.now() + settings.advanceDays * 24 * 60 * 60 * 1000) {
     throw new ResponseError(`Reservations may be requested up to ${settings.advanceDays} days in advance.`, 400)
   }
