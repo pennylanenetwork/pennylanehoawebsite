@@ -259,7 +259,7 @@ export default function Admin() {
         method: 'PATCH',
         body: JSON.stringify({ decision, reason, ...override }),
       })
-      setNotice(decision === 'approve' ? 'Reservation approved and added to the members calendar.' : 'Reservation denied and the resident was notified.')
+      setNotice(decision === 'approve' ? 'Reservation reviewed. It will be approved and added to the calendar after the deposit is paid.' : 'Reservation denied and the resident was notified.')
       await load()
     } catch (requestError) {
       setError(requestError.message)
@@ -1207,7 +1207,7 @@ function ReservationReview({ item, onDecide, onDeposit, onCancel, onDelete }) {
       )}
       <div className="deposit-admin-status"><strong>Security deposit</strong><span className={`status status-${item.depositStatus}`}>{item.depositStatus?.replace('_', ' ')}</span><small>$100.00 charge | $3.20 nonrefundable fee | $96.80 refundable</small>{item.depositDecisionReason && <p>{item.depositDecisionReason}</p>}</div>
       {item.depositStatus === 'held' && onDeposit && <div className="deposit-actions"><label>Reason or inspection note<textarea maxLength="1000" value={depositReason} onChange={(event) => setDepositReason(event.target.value)} /></label><button type="button" className="primary-button" onClick={() => onDeposit(item.id, 'refund', depositReason)}>Refund $96.80</button><button type="button" className="row-delete" disabled={!depositReason.trim()} onClick={() => onDeposit(item.id, 'retain', depositReason)}>Retain deposit</button></div>}
-      {item.status === 'pending' && onDecide && (
+      {item.status === 'pending' && !item.reviewedAt && onDecide && (
         <>
           <div className="override-controls">
             <label className="rules-check">
@@ -1248,6 +1248,7 @@ function ReservationReview({ item, onDecide, onDeposit, onCancel, onDelete }) {
           </div>
         </>
       )}
+      {item.status === 'pending' && item.reviewedAt && <p className="deposit-status"><strong>Board review complete:</strong> Awaiting the resident's security deposit.</p>}
       {item.status === 'approved' && onCancel && (
         <button type="button" className="row-delete" onClick={onCancel}>
           Cancel reservation

@@ -275,9 +275,9 @@ async function notifyReservationAdmins(env, user, reservation) {
 }
 
 async function notifyReservationDecision(env, reservation, approved) {
-  const subject = approved ? 'Your clubhouse reservation was approved' : 'Your clubhouse reservation was denied'
+  const subject = approved ? 'Your clubhouse reservation is awaiting its deposit' : 'Your clubhouse reservation was denied'
   const decision = approved
-    ? '<p>Your request has been approved and added to the members calendar. Sign in to the resident portal to pay the required $100 security deposit. The $3.20 processing fee is nonrefundable; the standard refund after a satisfactory inspection is $96.80.</p>'
+    ? '<p>Your request has passed board review and is awaiting the required $100 security deposit. It will be approved and added to the members calendar after the deposit is paid. The $3.20 processing fee is nonrefundable; the standard refund after a satisfactory inspection is $96.80.</p>'
     : `<p>Your request was denied.</p><p><strong>Reason:</strong> ${escapeHtml(reservation.decisionReason)}</p>`
   await sendTransactionalEmail(env, [{ email: reservation.email, name: reservation.residentName }], subject,
     `<p>Hello ${escapeHtml(reservation.firstName)},</p>${decision}<p><strong>${escapeHtml(reservation.eventName)}</strong><br>${escapeHtml(reservation.startsAt)} through ${escapeHtml(reservation.endsAt)}</p><p>You can review your reservation history in the resident portal.</p>`,
@@ -676,7 +676,8 @@ async function clubhouseAvailability(env, startsAt, endsAt, excludeReservationId
   const bufferedStart = new Date(new Date(startsAt).getTime() - bufferMilliseconds).toISOString()
   const bufferedEnd = new Date(new Date(endsAt).getTime() + bufferMilliseconds).toISOString()
   const conflict = await env.DB.prepare(`SELECT event_name AS eventName FROM clubhouse_reservations
-    WHERE status = 'approved' AND id != ?3 AND starts_at < ?2 AND ends_at > ?1 LIMIT 1`)
+    WHERE (status = 'approved' OR (status = 'pending' AND deposit_status = 'pending' AND reviewed_at IS NOT NULL))
+      AND id != ?3 AND starts_at < ?2 AND ends_at > ?1 LIMIT 1`)
     .bind(bufferedStart, bufferedEnd, excludeReservationId).first()
   if (conflict) return { available: false, reason: `The requested time conflicts with an approved reservation or its ${settings.cleanupBufferMinutes}-minute cleanup buffer.` }
   return { available: true, settings }
@@ -1809,23 +1810,19 @@ async function decideReservation(request, env, reservationId) {
     FROM clubhouse_reservations INNER JOIN users ON users.id = clubhouse_reservations.user_id
     WHERE clubhouse_reservations.id = ?1`).bind(reservationId).first()
   if (!reservation) throw new ResponseError('Reservation not found.', 404)
-  if (reservation.status !== 'pending') throw new ResponseError('Only pending requests can be reviewed.', 409)
+  if (reservation.status !== 'pending' || reservation.reviewed_at) throw new ResponseError('Only unreviewed requests can be reviewed.', 409)
   const reason = cleanText(body.reason, 1000)
   if (decision === 'deny' && !reason) throw new ResponseError('Enter a reason for denying the request.', 400)
   if (decision === 'approve') {
     const availability = await clubhouseAvailability(env, reservation.starts_at, reservation.ends_at, reservationId)
     if (!availability.available && !overrideConflicts) throw new ResponseError(availability.reason, 409)
     if (!availability.available && !overrideReason) throw new ResponseError('Document why this availability rule is being overridden.', 400)
-    const eventId = crypto.randomUUID()
     await env.DB.batch([
-      env.DB.prepare(`INSERT INTO events (id, title, description, starts_at, ends_at, audience, event_type, created_by)
-        VALUES (?1, ?2, ?3, ?4, ?5, 'members', 'clubhouse', ?6)`).bind(eventId,
-        `Clubhouse reserved: ${reservation.event_name}`, reservation.event_type, reservation.starts_at, reservation.ends_at, reservation.user_id),
-      env.DB.prepare(`UPDATE clubhouse_reservations SET event_id = ?1, status = 'approved', decision_reason = NULL,
+      env.DB.prepare(`UPDATE clubhouse_reservations SET status = 'pending', decision_reason = NULL,
         deposit_status = 'pending',
-        override_reason = ?2, override_by = CASE WHEN ?2 IS NULL THEN NULL ELSE ?3 END,
-        reviewed_by = ?3, reviewed_at = CURRENT_TIMESTAMP, updated_at = CURRENT_TIMESTAMP WHERE id = ?4`)
-        .bind(eventId, !availability.available ? overrideReason : null, admin.id, reservationId),
+        override_reason = ?1, override_by = CASE WHEN ?1 IS NULL THEN NULL ELSE ?2 END,
+        reviewed_by = ?2, reviewed_at = CURRENT_TIMESTAMP, updated_at = CURRENT_TIMESTAMP WHERE id = ?3`)
+        .bind(!availability.available ? overrideReason : null, admin.id, reservationId),
       env.DB.prepare(`INSERT INTO audit_log (actor_user_id, action, target_type, target_id, details_json)
         VALUES (?1, ?2, 'reservation', ?3, ?4)`).bind(admin.id,
         !availability.available ? 'reservation.approved_with_override' : 'reservation.approved', reservationId,
@@ -1846,7 +1843,7 @@ async function decideReservation(request, env, reservationId) {
   } catch (error) {
     console.error(JSON.stringify({ message: 'Reservation decision notification failed', reservationId, detail: String(error) }))
   }
-  return json({ status: decision === 'approve' ? 'approved' : 'denied' })
+  return json({ status: decision === 'approve' ? 'pending' : 'denied' })
 }
 
 async function cancelReservation(request, env, reservationId) {
@@ -1867,11 +1864,12 @@ async function cancelReservation(request, env, reservationId) {
 
 async function createDepositCheckout(request, env, reservationId) {
   const user = await requireUser(request, env)
-  const reservation = await env.DB.prepare(`SELECT id, event_name AS eventName, status, deposit_status AS depositStatus,
-    stripe_checkout_session_id AS checkoutSessionId FROM clubhouse_reservations WHERE id = ?1 AND user_id = ?2`)
+  const reservation = await env.DB.prepare(`SELECT id, event_name AS eventName, status, reviewed_at AS reviewedAt,
+    deposit_status AS depositStatus, stripe_checkout_session_id AS checkoutSessionId
+    FROM clubhouse_reservations WHERE id = ?1 AND user_id = ?2`)
     .bind(reservationId, user.id).first()
   if (!reservation) throw new ResponseError('Reservation not found.', 404)
-  if (reservation.status !== 'approved' || reservation.depositStatus !== 'pending') throw new ResponseError('This reservation is not awaiting a deposit.', 409)
+  if (reservation.status !== 'pending' || !reservation.reviewedAt || reservation.depositStatus !== 'pending') throw new ResponseError('This reservation is not awaiting a deposit.', 409)
   const origin = new URL(request.url).origin
   const session = await stripeRequest(env, 'checkout/sessions', {
     mode: 'payment',
@@ -1900,13 +1898,24 @@ async function stripeWebhook(request, env) {
   if (event.type === 'checkout.session.completed' && object.payment_status === 'paid') {
     const reservationId = object.metadata?.reservation_id || object.client_reference_id
     if (reservationId) {
+      const reservation = await env.DB.prepare(`SELECT event_id AS eventId, event_name AS eventName,
+        event_type AS eventType, starts_at AS startsAt, ends_at AS endsAt, user_id AS userId
+        FROM clubhouse_reservations WHERE id = ?1`).bind(reservationId).first()
+      if (!reservation) throw new ResponseError('Reservation not found.', 404)
+      const eventId = reservation.eventId || crypto.randomUUID()
       const alreadyProcessed = await env.DB.prepare(`SELECT id FROM audit_log
         WHERE action = 'reservation.deposit_paid' AND target_id = ?1 LIMIT 1`).bind(reservationId).first()
       await env.DB.batch([
         env.DB.prepare(`UPDATE clubhouse_reservations SET stripe_checkout_session_id = ?1,
           stripe_payment_intent_id = ?2, deposit_status = 'held', deposit_collected_cents = 10000,
-          deposit_paid_at = COALESCE(deposit_paid_at, CURRENT_TIMESTAMP), updated_at = CURRENT_TIMESTAMP
-          WHERE id = ?3 AND deposit_status = 'pending'`).bind(object.id, object.payment_intent, reservationId),
+          deposit_paid_at = COALESCE(deposit_paid_at, CURRENT_TIMESTAMP), status = 'approved', event_id = ?3,
+          updated_at = CURRENT_TIMESTAMP
+          WHERE id = ?4 AND deposit_status = 'pending'`).bind(object.id, object.payment_intent, eventId, reservationId),
+        reservation.eventId
+          ? env.DB.prepare(`UPDATE events SET status = 'scheduled', updated_at = CURRENT_TIMESTAMP WHERE id = ?1`).bind(eventId)
+          : env.DB.prepare(`INSERT INTO events (id, title, description, starts_at, ends_at, audience, event_type, created_by)
+            VALUES (?1, ?2, ?3, ?4, ?5, 'members', 'clubhouse', ?6)`).bind(eventId,
+            `Clubhouse reserved: ${reservation.eventName}`, reservation.eventType, reservation.startsAt, reservation.endsAt, reservation.userId),
         env.DB.prepare(`INSERT INTO audit_log (action, target_type, target_id, details_json)
           SELECT 'reservation.deposit_paid', 'reservation', ?1, ?2
           WHERE NOT EXISTS (SELECT 1 FROM audit_log WHERE action = 'reservation.deposit_paid' AND target_id = ?1)`)

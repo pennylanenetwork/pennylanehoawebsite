@@ -609,7 +609,7 @@ function ResidentHome({ user, onLogout }) {
                   <p>
                     {item.eventType} | {item.attendeeCount} attendees | {item.cleaningMethod === 'professional' ? 'Professional cleaner' : 'Self-cleaning'}
                   </p>
-                  {item.status === 'approved' && item.depositStatus === 'pending' && (
+                  {item.status === 'pending' && item.depositStatus === 'pending' && item.reviewedAt && (
                     <div className="deposit-callout"><strong>$100 security deposit required</strong><p>$3.20 is a nonrefundable Stripe processing fee. After a satisfactory inspection, the standard refund is $96.80.</p><button type="button" className="primary-button" onClick={() => payDeposit(item.id)}>Pay deposit securely</button></div>
                   )}
                   {item.depositStatus === 'held' && <p className="deposit-status"><strong>Deposit paid:</strong> $100.00 collected; $96.80 refundable.</p>}
