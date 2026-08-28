@@ -1283,13 +1283,13 @@ function AccountReview({ account, currentUser, properties, onStatus, onSave }) {
           <span className={`status status-${account.status}`}>{account.status}</span>
           <span className="account-type">{residentTypeLabel(account.residentType)}</span>
           {account.role !== 'resident' && <span className="account-role">{account.role === 'super_admin' ? 'Super administrator' : 'Administrator'}</span>}
-          {account.isBoardMember && <span className="committee-role">Board member</span>}
-          {account.isAccMember && <span className="committee-role">ACC Committee</span>}
-          {account.isTreasurer && <span className="committee-role">Treasurer</span>}
-          {account.isPresident && <span className="committee-role">President</span>}
-          {account.isVicePresident && <span className="committee-role">Vice President</span>}
-          {account.isSecretary && <span className="committee-role">Secretary</span>}
-          {account.isAmenitiesCoordinator && <span className="committee-role">Amenities Coordinator</span>}
+          {Boolean(account.isBoardMember) && <span className="committee-role">Board member</span>}
+          {Boolean(account.isAccMember) && <span className="committee-role">ACC Committee</span>}
+          {Boolean(account.isTreasurer) && <span className="committee-role">Treasurer</span>}
+          {Boolean(account.isPresident) && <span className="committee-role">President</span>}
+          {Boolean(account.isVicePresident) && <span className="committee-role">Vice President</span>}
+          {Boolean(account.isSecretary) && <span className="committee-role">Secretary</span>}
+          {Boolean(account.isAmenitiesCoordinator) && <span className="committee-role">Amenities Coordinator</span>}
         </div>
       </header>
       {editing ? (
