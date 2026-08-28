@@ -884,8 +884,8 @@ function ResidentMessageThread({ item, dateTime, onReply, onDelete }) {
         <span className={`status status-${item.status}`}>{item.status}</span>
       </header>
       <div className="message-thread">
-        <div className="thread-entry from-resident">
-          <small>You</small>
+        <div className={`thread-entry from-${item.senderRole || 'resident'}`}>
+          <small>{item.senderRole === 'admin' ? 'HOA administrator' : 'You'}</small>
           <p>{item.message}</p>
           <time>{dateTime(item.createdAt)}</time>
         </div>

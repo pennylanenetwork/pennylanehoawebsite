@@ -252,7 +252,8 @@ async function depositRecipients(env, includeBoard = false) {
 async function reservationNotificationDetails(env, reservationId) {
   return env.DB.prepare(`SELECT clubhouse_reservations.event_name AS eventName,
     clubhouse_reservations.starts_at AS startsAt, clubhouse_reservations.ends_at AS endsAt,
-    users.first_name || ' ' || users.last_name AS residentName,
+    users.id AS userId, users.email, users.first_name AS firstName,
+    users.first_name || ' ' || users.last_name AS residentName, users.property_id AS propertyId,
     properties.street_number || ' ' || properties.street_name || ' ' || properties.street_suffix AS address
     FROM clubhouse_reservations INNER JOIN users ON users.id = clubhouse_reservations.user_id
     INNER JOIN properties ON properties.id = users.property_id WHERE clubhouse_reservations.id = ?1`).bind(reservationId).first()
@@ -542,7 +543,8 @@ async function portalDashboard(request, env) {
       deposit_refundable_cents AS depositRefundableCents, deposit_refunded_cents AS depositRefundedCents,
       deposit_decision_reason AS depositDecisionReason
       FROM clubhouse_reservations WHERE user_id = ?1 ORDER BY starts_at DESC`).bind(user.id),
-    env.DB.prepare(`SELECT id, COALESCE(routing_group, category) AS category, message, status, created_at AS createdAt
+    env.DB.prepare(`SELECT id, COALESCE(routing_group, category) AS category, message, sender_role AS senderRole,
+      status, created_at AS createdAt
       FROM contact_messages WHERE user_id = ?1 ORDER BY created_at DESC LIMIT 100`).bind(user.id),
     env.DB.prepare(`SELECT contact_message_replies.id, contact_message_replies.contact_message_id AS messageId,
       contact_message_replies.author_role AS authorRole, contact_message_replies.body,
@@ -1675,15 +1677,30 @@ async function decideDeposit(request, env, reservationId) {
   if (reservation.depositStatus !== 'held' || !reservation.paymentIntentId) throw new ResponseError('This reservation does not have a refundable deposit.', 409)
   if (action === 'retain') {
     if (!reason) throw new ResponseError('Enter the reason for retaining the deposit.', 400)
+    const details = await reservationNotificationDetails(env, reservationId)
+    if (!details) throw new ResponseError('Reservation details could not be loaded.', 404)
+    const messageId = crypto.randomUUID()
+    const residentNotice = `Your $96.80 refundable clubhouse deposit was not approved for refund.\n\nEvent: ${details.eventName}\nReason: ${reason}\n\nThe $3.20 Stripe processing fee was nonrefundable under the deposit agreement.`
     await env.DB.batch([
       env.DB.prepare(`UPDATE clubhouse_reservations SET deposit_status = 'forfeited', deposit_decision_reason = ?1,
         deposit_decided_by = ?2, deposit_decided_at = CURRENT_TIMESTAMP, updated_at = CURRENT_TIMESTAMP WHERE id = ?3`).bind(reason, admin.id, reservationId),
       env.DB.prepare(`INSERT INTO audit_log (actor_user_id, action, target_type, target_id, details_json)
         VALUES (?1, 'reservation.deposit_retained', 'reservation', ?2, ?3)`).bind(admin.id, reservationId, JSON.stringify({ reason })),
+      env.DB.prepare(`INSERT INTO contact_messages (id, name, email, category, message, user_id, property_id,
+        routing_group, sender_role, status) VALUES (?1, 'Penny Lane HOA', ?2, 'general', ?3, ?4, ?5,
+        'amenities', 'admin', 'read')`).bind(messageId, details.email, residentNotice, details.userId, details.propertyId),
+      env.DB.prepare(`INSERT INTO communication_log (id, property_id, user_id, direction, channel,
+        recipient_or_sender, subject, summary, delivery_status, related_type, related_id)
+        VALUES (?1, ?2, ?3, 'outbound', 'portal', ?4, ?5, ?6, 'recorded', 'contact', ?7)`)
+        .bind(crypto.randomUUID(), details.propertyId, details.userId, details.email,
+          'Clubhouse deposit not refunded', residentNotice.slice(0, 500), messageId),
     ])
     try {
-      const details = await reservationNotificationDetails(env, reservationId)
-      if (details) await sendTransactionalEmail(env, await depositRecipients(env, true),
+      await sendTransactionalEmail(env, [{ email: details.email, name: details.residentName }],
+        `Your clubhouse deposit was not refunded: ${details.eventName}`,
+        `<p>Hello ${escapeHtml(details.firstName)},</p><p>Your $96.80 refundable clubhouse deposit was not approved for refund.</p><p><strong>Event:</strong> ${escapeHtml(details.eventName)}<br><strong>Reason:</strong> ${escapeHtml(reason)}</p><p>The $3.20 Stripe processing fee was nonrefundable under the deposit agreement. This notice is also available in your resident portal messages.</p>`,
+        'resident-deposit-retained')
+      await sendTransactionalEmail(env, await depositRecipients(env, true),
         `Clubhouse deposit retained: ${details.eventName}`,
         `<p>The refundable portion of a clubhouse deposit was not approved for refund.</p><p><strong>Resident:</strong> ${escapeHtml(details.residentName)}<br><strong>Property:</strong> ${escapeHtml(details.address)}<br><strong>Event:</strong> ${escapeHtml(details.eventName)}<br><strong>Amount retained:</strong> $96.80<br><strong>Reason:</strong> ${escapeHtml(reason)}</p>`,
         'clubhouse-deposit-retained', null, false)
