@@ -250,19 +250,6 @@ export default function Admin() {
     }
   }
 
-  async function setPropertyStatus(id, status) {
-    setError('')
-    try {
-      await api(`/api/admin/properties/${id}`, {
-        method: 'PATCH',
-        body: JSON.stringify({ status }),
-      })
-      await load()
-    } catch (requestError) {
-      setError(requestError.message)
-    }
-  }
-
   async function decideReservation(id, decision, reason = '', override = {}) {
     setError('')
     setNotice('')
@@ -495,7 +482,7 @@ export default function Admin() {
           </section>
         )}
 
-        {tab === 'properties' && selectedProperty && <PropertyDetail propertyId={selectedProperty} isSuperAdmin={user?.role === 'super_admin'} onBack={() => setSelectedProperty(null)} />}
+        {tab === 'properties' && selectedProperty && <PropertyDetail propertyId={selectedProperty} isSuperAdmin={user?.role === 'super_admin'} onUpdated={load} onBack={() => setSelectedProperty(null)} />}
         {tab === 'properties' && !selectedProperty && (
           <Workspace
             title="Add property"
@@ -527,19 +514,10 @@ export default function Admin() {
               </form>
             }
             rows={visibleProperties.map((item) => (
-              <DataRow
+              <PropertySummaryRow
                 key={item.id}
-                title={item.address}
-                detail={item.residentNames ? `${item.phase} | ${item.residentNames}` : item.phase}
-                meta={item.status}
+                property={item}
                 onOpen={() => setSelectedProperty(item.id)}
-                actions={
-                  <select aria-label={`Status for ${item.address}`} value={item.status} onChange={(event) => setPropertyStatus(item.id, event.target.value)}>
-                    <option value="active">Active</option>
-                    <option value="planned">Planned</option>
-                    <option value="inactive">Inactive</option>
-                  </select>
-                }
               />
             ))}
           />
@@ -1147,6 +1125,29 @@ function DataRow({ title, detail, meta, actions, onOpen }) {
   )
 }
 
+function PropertySummaryRow({ property, onOpen }) {
+  return (
+    <article className="property-summary-row">
+      <header>
+        <div>
+          <button type="button" className="row-title-button" onClick={onOpen}>{property.address}</button>
+          <small>{property.phase}</small>
+        </div>
+        <span className={`status status-${property.status}`}>{property.status}</span>
+      </header>
+      <div className="property-list-accounts">
+        <span>Associated accounts</span>
+        <strong>{property.residentNames || 'No registered accounts'}</strong>
+      </div>
+      <div className="property-list-metrics">
+        <span><strong>{property.accountCount}</strong> accounts</span>
+        <span><strong>{property.activeGuestCount}</strong> active guests</span>
+        <span><strong>{property.pendingReservationCount}</strong> pending reservations</span>
+      </div>
+    </article>
+  )
+}
+
 function ReservationReview({ item, onDecide, onDeposit, onCancel, onDelete }) {
   const [reason, setReason] = useState('')
   const [overrideConflicts, setOverrideConflicts] = useState(false)
@@ -1598,7 +1599,7 @@ function PhotoEditor({ photo, canMoveUp, canMoveDown, onMoveUp, onMoveDown, onUp
   )
 }
 
-function PropertyDetail({ propertyId, onBack, isSuperAdmin }) {
+function PropertyDetail({ propertyId, onBack, isSuperAdmin, onUpdated }) {
   const [record, setRecord] = useState(null)
   const [error, setError] = useState('')
   const [notice, setNotice] = useState('')
@@ -1641,6 +1642,21 @@ function PropertyDetail({ propertyId, onBack, isSuperAdmin }) {
       setNotice(requestError.message)
     }
   }
+  async function updatePropertyStatus(active) {
+    setError('')
+    setNotice('')
+    try {
+      await api(`/api/admin/properties/${propertyId}`, {
+        method: 'PATCH',
+        body: JSON.stringify({ status: active ? 'active' : 'inactive' }),
+      })
+      setNotice(`Property marked ${active ? 'active' : 'inactive'}.`)
+      await load()
+      if (onUpdated) await onUpdated()
+    } catch (requestError) {
+      setError(requestError.message)
+    }
+  }
   async function deleteHistory(kind, id) {
     if (!window.confirm('Permanently delete this history record? This cannot be undone.')) return
     setError('')
@@ -1681,8 +1697,12 @@ function PropertyDetail({ propertyId, onBack, isSuperAdmin }) {
           <p className="portal-kicker">Property record</p>
           <h2>{property.address}</h2>
           <p>
-            {property.phase} | {property.city}, {property.state} {property.postalCode} | {property.status}
+            {property.phase} | {property.city}, {property.state} {property.postalCode}
           </p>
+          <label className="property-status-control">
+            <input type="checkbox" checked={property.status === 'active'} onChange={(event) => updatePropertyStatus(event.target.checked)} />
+            <span><strong>Active property</strong><small>Inactive properties remain in HOA records but are not available for new resident registration.</small></span>
+          </label>
         </div>
       </header>
       {notice && (

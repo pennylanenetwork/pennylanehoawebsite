@@ -784,11 +784,16 @@ async function adminDashboard(request, env) {
     clubhouse, blackouts, quickLinks] = await env.DB.batch([
     env.DB.prepare(`SELECT properties.id, properties.street_number || ' ' || properties.street_name || ' ' || properties.street_suffix AS address,
       properties.status, hoa_phases.name AS phase,
-      GROUP_CONCAT(users.first_name || ' ' || users.last_name, ' | ') AS residentNames
+      (SELECT GROUP_CONCAT(users.first_name || ' ' || users.last_name, ' | ') FROM users
+        WHERE users.property_id = properties.id AND users.status IN ('active', 'pending')) AS residentNames,
+      (SELECT COUNT(*) FROM users WHERE users.property_id = properties.id
+        AND users.status IN ('active', 'pending')) AS accountCount,
+      (SELECT COUNT(*) FROM guest_registrations WHERE guest_registrations.property_id = properties.id
+        AND guest_registrations.status = 'active' AND guest_registrations.ends_on >= date('now')) AS activeGuestCount,
+      (SELECT COUNT(*) FROM clubhouse_reservations INNER JOIN users AS reservation_users
+        ON reservation_users.id = clubhouse_reservations.user_id WHERE reservation_users.property_id = properties.id
+        AND clubhouse_reservations.status = 'pending') AS pendingReservationCount
       FROM properties INNER JOIN hoa_phases ON hoa_phases.id = properties.phase_id
-      LEFT JOIN users ON users.property_id = properties.id
-      GROUP BY properties.id, properties.street_number, properties.street_name, properties.street_suffix,
-        properties.status, hoa_phases.name
       ORDER BY properties.street_name, properties.street_number`),
     env.DB.prepare('SELECT id, name, status FROM hoa_phases ORDER BY id'),
     env.DB.prepare('SELECT id, title, body, audience, published_at AS publishedAt FROM announcements ORDER BY published_at DESC'),
