@@ -777,6 +777,11 @@ function AdminOverview({ accounts, data, onOpen }) {
       tab: 'accounts',
     },
     {
+      label: 'Registered accounts',
+      value: accounts.filter((item) => item.status === 'active').length,
+      tab: 'accounts',
+    },
+    {
       label: 'Unread messages',
       value: data.messages.filter((item) => item.status === 'new').length,
       tab: 'messages',
