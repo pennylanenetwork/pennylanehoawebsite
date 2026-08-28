@@ -39,7 +39,7 @@ D1 Time Travel is automatic and requires no scheduled job. Use it for recent poi
 To activate the workflow, add these GitHub Actions repository secrets:
 
 - `CLOUDFLARE_ACCOUNT_ID`: the account ID listed above.
-- `CLOUDFLARE_API_TOKEN`: a dedicated token limited to this account with D1 read and R2 object write permissions.
+- `CLOUDFLARE_API_TOKEN`: a dedicated token limited to this account with D1 Edit and Workers R2 Storage Edit permissions.
 
 Run the workflow manually once from **GitHub > Actions > D1 backup > Run workflow** and verify the resulting object under **R2 > penny-lane-hoa-documents > database-backups**. Review failed scheduled workflows promptly.
 
