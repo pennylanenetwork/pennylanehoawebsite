@@ -82,8 +82,8 @@ function sessionCookie(token, maxAge = SESSION_SECONDS) {
   return `${SESSION_COOKIE}=${token}; Path=/; HttpOnly; Secure; SameSite=Lax; Max-Age=${maxAge}`
 }
 
-function oauthStateCookie(token, maxAge = 600) {
-  return `${OAUTH_STATE_COOKIE}=${token}; Path=/api/auth/google/callback; HttpOnly; Secure; SameSite=Lax; Max-Age=${maxAge}`
+function oauthStateCookie(token, maxAge = 600, callbackPath = '/api/auth/google/callback') {
+  return `${OAUTH_STATE_COOKIE}=${token}; Path=${callbackPath}; HttpOnly; Secure; SameSite=Lax; Max-Age=${maxAge}`
 }
 
 function requireSameOrigin(request) {
@@ -394,6 +394,84 @@ async function finishGoogleAuth(request, env) {
   if (user.status !== 'active') return new Response(null, { status: 302, headers: { location: portalRedirect(request, user.status), 'set-cookie': oauthStateCookie('', 0) } })
   const response = await createSessionResponse(request, env, user.id, portalRedirect(request, null))
   response.headers.append('set-cookie', oauthStateCookie('', 0))
+  return response
+}
+
+async function startYahooAuth(request, env) {
+  if (!env.YAHOO_CLIENT_ID || !env.YAHOO_CLIENT_SECRET) throw new ResponseError('Yahoo sign-in is not configured yet.', 503)
+  const state = randomToken(24)
+  const redirectUri = new URL('/api/auth/yahoo/callback', request.url).toString()
+  const url = new URL('https://api.login.yahoo.com/oauth2/request_auth')
+  url.search = new URLSearchParams({
+    client_id: env.YAHOO_CLIENT_ID,
+    redirect_uri: redirectUri,
+    response_type: 'code',
+    scope: 'openid email profile',
+    state,
+    nonce: randomToken(24),
+  }).toString()
+  return new Response(null, { status: 302, headers: {
+    location: url.toString(),
+    'set-cookie': oauthStateCookie(state, 600, '/api/auth/yahoo/callback'),
+  } })
+}
+
+async function finishYahooAuth(request, env) {
+  const url = new URL(request.url)
+  const callbackPath = '/api/auth/yahoo/callback'
+  const state = url.searchParams.get('state') || ''
+  const expectedState = getCookie(request, OAUTH_STATE_COOKIE) || ''
+  const failureHeaders = { location: portalRedirect(request, 'yahoo_failed'),
+    'set-cookie': oauthStateCookie('', 0, callbackPath) }
+  if (!state || !expectedState || state !== expectedState || url.searchParams.get('error')) {
+    return new Response(null, { status: 302, headers: failureHeaders })
+  }
+
+  const redirectUri = new URL(callbackPath, request.url).toString()
+  const tokenResponse = await fetch('https://api.login.yahoo.com/oauth2/get_token', {
+    method: 'POST',
+    headers: {
+      authorization: `Basic ${btoa(`${env.YAHOO_CLIENT_ID}:${env.YAHOO_CLIENT_SECRET}`)}`,
+      'content-type': 'application/x-www-form-urlencoded',
+    },
+    body: new URLSearchParams({
+      code: url.searchParams.get('code') || '',
+      redirect_uri: redirectUri,
+      grant_type: 'authorization_code',
+    }),
+  })
+  if (!tokenResponse.ok) return new Response(null, { status: 302, headers: failureHeaders })
+  const tokens = await tokenResponse.json()
+  const profileResponse = await fetch('https://api.login.yahoo.com/openid/v1/userinfo', {
+    headers: { authorization: `Bearer ${tokens.access_token}` },
+  })
+  if (!profileResponse.ok) return new Response(null, { status: 302, headers: failureHeaders })
+  const profile = await profileResponse.json()
+  const email = String(profile.email || '').trim().toLowerCase()
+  if (!profile.sub || profile.email_verified !== true || !email) {
+    return new Response(null, { status: 302, headers: failureHeaders })
+  }
+
+  let user = await env.DB.prepare(`SELECT users.id, users.status FROM auth_identities
+    INNER JOIN users ON users.id = auth_identities.user_id
+    WHERE auth_identities.provider = 'yahoo' AND auth_identities.subject = ?1`)
+    .bind(String(profile.sub)).first()
+  if (!user) {
+    user = await env.DB.prepare('SELECT id, status FROM users WHERE email = ?1').bind(email).first()
+    if (!user) return new Response(null, { status: 302, headers: {
+      location: portalRedirect(request, 'not_registered'),
+      'set-cookie': oauthStateCookie('', 0, callbackPath),
+    } })
+    await env.DB.prepare(`INSERT INTO auth_identities (provider, subject, user_id, email_at_link)
+      VALUES ('yahoo', ?1, ?2, ?3) ON CONFLICT(provider, user_id) DO NOTHING`)
+      .bind(String(profile.sub), user.id, email).run()
+  }
+  if (user.status !== 'active') return new Response(null, { status: 302, headers: {
+    location: portalRedirect(request, user.status),
+    'set-cookie': oauthStateCookie('', 0, callbackPath),
+  } })
+  const response = await createSessionResponse(request, env, user.id, portalRedirect(request, null))
+  response.headers.append('set-cookie', oauthStateCookie('', 0, callbackPath))
   return response
 }
 
@@ -2186,6 +2264,8 @@ async function handleApi(request, env) {
   if (request.method === 'GET' && url.pathname === '/api/auth/session') return json({ user: await currentUser(request, env) })
   if (request.method === 'GET' && url.pathname === '/api/auth/google/start') return startGoogleAuth(request, env)
   if (request.method === 'GET' && url.pathname === '/api/auth/google/callback') return finishGoogleAuth(request, env)
+  if (request.method === 'GET' && url.pathname === '/api/auth/yahoo/start') return startYahooAuth(request, env)
+  if (request.method === 'GET' && url.pathname === '/api/auth/yahoo/callback') return finishYahooAuth(request, env)
   if (request.method === 'POST' && url.pathname === '/api/auth/register') return register(request, env)
   if (request.method === 'POST' && url.pathname === '/api/auth/code/request') return requestLoginCode(request, env)
   if (request.method === 'POST' && url.pathname === '/api/auth/code/verify') return verifyLoginCode(request, env)

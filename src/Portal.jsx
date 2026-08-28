@@ -93,7 +93,7 @@ function PortalHeader({ user }) {
 }
 
 function authNotice(status) {
-  if (status === 'not_registered') return 'That Google account is not registered yet. Submit a resident access request first.'
+  if (status === 'not_registered') return 'That account is not registered yet. Submit a resident access request first.'
   if (status === 'pending') return 'Your resident registration is still awaiting HOA approval.'
   return ''
 }
@@ -101,6 +101,7 @@ function authNotice(status) {
 function authError(status) {
   if (status === 'rejected' || status === 'suspended') return 'This resident account is not currently active.'
   if (status === 'google_failed') return 'Google sign-in could not be completed. Please try again.'
+  if (status === 'yahoo_failed') return 'Yahoo sign-in could not be completed. Please try again.'
   return ''
 }
 
@@ -1213,8 +1214,11 @@ export default function Portal() {
             <form onSubmit={loginStage === 'request' ? requestCode : verifyCode}>
               {loginStage === 'request' && (
                 <>
-                  <a className="google-button" href="/api/auth/google/start">
+                  <a className="oauth-button" href="/api/auth/google/start">
                     Continue with Google
+                  </a>
+                  <a className="oauth-button" href="/api/auth/yahoo/start">
+                    Continue with Yahoo
                   </a>
                   <div className="auth-divider">
                     <span>or use email</span>
