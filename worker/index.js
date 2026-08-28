@@ -1680,7 +1680,7 @@ async function decideDeposit(request, env, reservationId) {
     const details = await reservationNotificationDetails(env, reservationId)
     if (!details) throw new ResponseError('Reservation details could not be loaded.', 404)
     const messageId = crypto.randomUUID()
-    const residentNotice = `Your $96.80 refundable clubhouse deposit was not approved for refund.\n\nEvent: ${details.eventName}\nReason: ${reason}\n\nThe $3.20 Stripe processing fee was nonrefundable under the deposit agreement.`
+    const residentNotice = `Your $96.80 refundable clubhouse deposit was not approved for refund.\n\nEvent: ${details.eventName}\nReason: ${reason}\n\nThe $3.20 Stripe processing fee is also non-refundable per the deposit agreement.`
     await env.DB.batch([
       env.DB.prepare(`UPDATE clubhouse_reservations SET deposit_status = 'forfeited', deposit_decision_reason = ?1,
         deposit_decided_by = ?2, deposit_decided_at = CURRENT_TIMESTAMP, updated_at = CURRENT_TIMESTAMP WHERE id = ?3`).bind(reason, admin.id, reservationId),
@@ -1698,7 +1698,7 @@ async function decideDeposit(request, env, reservationId) {
     try {
       await sendTransactionalEmail(env, [{ email: details.email, name: details.residentName }],
         `Your clubhouse deposit was not refunded: ${details.eventName}`,
-        `<p>Hello ${escapeHtml(details.firstName)},</p><p>Your $96.80 refundable clubhouse deposit was not approved for refund.</p><p><strong>Event:</strong> ${escapeHtml(details.eventName)}<br><strong>Reason:</strong> ${escapeHtml(reason)}</p><p>The $3.20 Stripe processing fee was nonrefundable under the deposit agreement. This notice is also available in your resident portal messages.</p>`,
+        `<p>Hello ${escapeHtml(details.firstName)},</p><p>Your $96.80 refundable clubhouse deposit was not approved for refund.</p><p><strong>Event:</strong> ${escapeHtml(details.eventName)}<br><strong>Reason:</strong> ${escapeHtml(reason)}</p><p>The $3.20 Stripe processing fee is also non-refundable per the deposit agreement. This notice is also available in your resident portal messages.</p>`,
         'resident-deposit-retained')
       await sendTransactionalEmail(env, await depositRecipients(env, true),
         `Clubhouse deposit retained: ${details.eventName}`,
