@@ -253,6 +253,7 @@ async function reservationNotificationDetails(env, reservationId) {
   return env.DB.prepare(`SELECT clubhouse_reservations.event_name AS eventName,
     clubhouse_reservations.starts_at AS startsAt, clubhouse_reservations.ends_at AS endsAt,
     users.id AS userId, users.email, users.first_name AS firstName,
+    users.notify_direct_messages AS notifyDirectMessages,
     users.first_name || ' ' || users.last_name AS residentName, users.property_id AS propertyId,
     properties.street_number || ' ' || properties.street_name || ' ' || properties.street_suffix AS address
     FROM clubhouse_reservations INNER JOIN users ON users.id = clubhouse_reservations.user_id
@@ -433,6 +434,7 @@ async function currentUser(request, env) {
       users.is_treasurer AS isTreasurer, users.is_amenities_coordinator AS isAmenitiesCoordinator,
       users.is_president AS isPresident, users.is_vice_president AS isVicePresident, users.is_secretary AS isSecretary,
       users.notify_announcements AS notifyAnnouncements, users.notify_events AS notifyEvents,
+      users.notify_direct_messages AS notifyDirectMessages,
       users.property_id AS propertyId,
       properties.street_number || ' ' || properties.street_name || ' ' || properties.street_suffix AS address
     FROM sessions
@@ -963,20 +965,26 @@ async function replyToContactMessage(request, env, id) {
   const admin = await requireAdmin(request, env)
   const body = await readJson(request)
   const reply = cleanText(body.reply, 5000, true)
-  const message = await env.DB.prepare(`SELECT id, name, email, COALESCE(routing_group, category) AS category,
-    message, user_id AS userId,
-    property_id AS propertyId FROM contact_messages WHERE id = ?1`).bind(id).first()
+  const message = await env.DB.prepare(`SELECT contact_messages.id, contact_messages.name, contact_messages.email,
+    COALESCE(contact_messages.routing_group, contact_messages.category) AS category, contact_messages.message,
+    contact_messages.user_id AS userId, contact_messages.property_id AS propertyId,
+    COALESCE(users.notify_direct_messages, 1) AS notifyDirectMessages
+    FROM contact_messages LEFT JOIN users ON users.id = contact_messages.user_id
+    WHERE contact_messages.id = ?1`).bind(id).first()
   if (!message) throw new ResponseError('Message not found.', 404)
   if (!canAccessMessage(admin, message.category)) throw new ResponseError('Not permitted.', 403)
-  let emailStatus = 'sent'
-  try {
-    await sendTransactionalEmail(env, [{ email: message.email, name: message.name }],
-      `Re: Your Penny Lane HOA ${message.category} message`,
-      `<p>Hello ${escapeHtml(message.name)},</p><p>${escapeHtml(reply).replace(/\n/g, '<br>')}</p><hr><p><strong>Your original message:</strong></p><p>${escapeHtml(message.message).replace(/\n/g, '<br>')}</p>`,
-      'message-reply', null, false)
-  } catch (error) {
-    emailStatus = 'failed'
-    console.error(JSON.stringify({ message: 'Portal reply email failed', contactId: id, detail: String(error) }))
+  let emailStatus = 'recorded'
+  if (message.notifyDirectMessages) {
+    emailStatus = 'sent'
+    try {
+      await sendTransactionalEmail(env, [{ email: message.email, name: message.name }],
+        `Re: Your Penny Lane HOA ${message.category} message`,
+        `<p>Hello ${escapeHtml(message.name)},</p><p>${escapeHtml(reply).replace(/\n/g, '<br>')}</p><hr><p><strong>Your original message:</strong></p><p>${escapeHtml(message.message).replace(/\n/g, '<br>')}</p>`,
+        'message-reply', null, false)
+    } catch (error) {
+      emailStatus = 'failed'
+      console.error(JSON.stringify({ message: 'Portal reply email failed', contactId: id, detail: String(error) }))
+    }
   }
   const replyId = crypto.randomUUID()
   await env.DB.batch([
@@ -985,8 +993,9 @@ async function replyToContactMessage(request, env, id) {
       VALUES (?1, ?2, ?3, 'admin', ?4, ?5)`).bind(replyId, id, admin.id, reply, emailStatus),
     env.DB.prepare(`INSERT INTO communication_log (id, property_id, user_id, direction, channel,
       recipient_or_sender, subject, summary, delivery_status, related_type, related_id)
-      VALUES (?1, ?2, ?3, 'outbound', 'email', ?4, ?5, ?6, ?7, 'contact_reply', ?8)`)
-      .bind(crypto.randomUUID(), message.propertyId, message.userId, message.email,
+      VALUES (?1, ?2, ?3, 'outbound', ?4, ?5, ?6, ?7, ?8, 'contact_reply', ?9)`)
+      .bind(crypto.randomUUID(), message.propertyId, message.userId,
+        message.notifyDirectMessages ? 'email' : 'portal', message.email,
         `Re: Your Penny Lane HOA ${message.category} message`, reply.slice(0, 500), emailStatus, id),
     env.DB.prepare(`INSERT INTO audit_log (actor_user_id, action, target_type, target_id, details_json)
       VALUES (?1, 'message.replied', 'contact_message', ?2, ?3)`).bind(admin.id, id,
@@ -1782,7 +1791,7 @@ async function decideDeposit(request, env, reservationId) {
           'Clubhouse deposit not refunded', residentNotice.slice(0, 500), messageId),
     ])
     try {
-      await sendTransactionalEmail(env, [{ email: details.email, name: details.residentName }],
+      if (details.notifyDirectMessages) await sendTransactionalEmail(env, [{ email: details.email, name: details.residentName }],
         `Your clubhouse deposit was not refunded: ${details.eventName}`,
         `<p>Hello ${escapeHtml(details.firstName)},</p><p>Your $96.80 refundable clubhouse deposit was not approved for refund.</p><p><strong>Event:</strong> ${escapeHtml(details.eventName)}<br><strong>Reason:</strong> ${escapeHtml(reason)}</p><p>The $3.20 Stripe processing fee is also non-refundable per the deposit agreement. This notice is also available in your resident portal messages.</p>`,
         'resident-deposit-retained')
@@ -2048,9 +2057,12 @@ async function updateNotificationPreferences(request, env) {
   const body = await readJson(request)
   const announcements = body.notifyAnnouncements === true ? 1 : 0
   const events = body.notifyEvents === true ? 1 : 0
+  const directMessages = body.notifyDirectMessages === true ? 1 : 0
   await env.DB.prepare(`UPDATE users SET notify_announcements = ?1, notify_events = ?2,
-    updated_at = CURRENT_TIMESTAMP WHERE id = ?3`).bind(announcements, events, user.id).run()
-  return json({ notifyAnnouncements: announcements, notifyEvents: events })
+    notify_direct_messages = ?3, updated_at = CURRENT_TIMESTAMP WHERE id = ?4`)
+    .bind(announcements, events, directMessages, user.id).run()
+  return json({ notifyAnnouncements: announcements, notifyEvents: events,
+    notifyDirectMessages: directMessages })
 }
 
 async function requestHouseholdMember(request, env) {

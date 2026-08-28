@@ -149,6 +149,7 @@ function ResidentHome({ user, onLogout }) {
   const [preferences, setPreferences] = useState({
     notifyAnnouncements: Boolean(user.notifyAnnouncements),
     notifyEvents: Boolean(user.notifyEvents),
+    notifyDirectMessages: Boolean(user.notifyDirectMessages),
   })
 
   async function load() {
@@ -833,6 +834,22 @@ function ResidentHome({ user, onLogout }) {
             <h2>Email notifications</h2>
             <p>Choose which optional community updates are emailed to you. Account security and reservation decisions are always sent.</p>
             <form onSubmit={savePreferences}>
+              <label>
+                <input
+                  type="checkbox"
+                  checked={preferences.notifyDirectMessages}
+                  onChange={(event) =>
+                    setPreferences({
+                      ...preferences,
+                      notifyDirectMessages: event.target.checked,
+                    })
+                  }
+                />
+                <span>
+                  <strong>Portal communications</strong>
+                  <small>Email me a copy when the HOA replies or sends me a portal message</small>
+                </span>
+              </label>
               <label>
                 <input
                   type="checkbox"
