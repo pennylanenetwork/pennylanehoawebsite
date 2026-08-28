@@ -242,6 +242,22 @@ async function messageRecipients(env, category) {
   return result.results.map((user) => ({ email: user.email, name: `${user.firstName} ${user.lastName}`.trim() }))
 }
 
+async function depositRecipients(env, includeBoard = false) {
+  const result = await env.DB.prepare(`SELECT email, first_name AS firstName, last_name AS lastName FROM users
+    WHERE status = 'active' AND (role = 'super_admin' OR is_treasurer = 1 OR is_amenities_coordinator = 1
+      OR (?1 = 1 AND is_board_member = 1)) ORDER BY id`).bind(includeBoard ? 1 : 0).all()
+  return result.results.map((user) => ({ email: user.email, name: `${user.firstName} ${user.lastName}`.trim() }))
+}
+
+async function reservationNotificationDetails(env, reservationId) {
+  return env.DB.prepare(`SELECT clubhouse_reservations.event_name AS eventName,
+    clubhouse_reservations.starts_at AS startsAt, clubhouse_reservations.ends_at AS endsAt,
+    users.first_name || ' ' || users.last_name AS residentName,
+    properties.street_number || ' ' || properties.street_name || ' ' || properties.street_suffix AS address
+    FROM clubhouse_reservations INNER JOIN users ON users.id = clubhouse_reservations.user_id
+    INNER JOIN properties ON properties.id = users.property_id WHERE clubhouse_reservations.id = ?1`).bind(reservationId).first()
+}
+
 async function notifyReservationAdmins(env, user, reservation) {
   const recipients = await activeAdminRecipients(env)
   const residentName = `${user.firstName} ${user.lastName}`.trim()
@@ -1615,6 +1631,8 @@ async function stripeWebhook(request, env) {
   if (event.type === 'checkout.session.completed' && object.payment_status === 'paid') {
     const reservationId = object.metadata?.reservation_id || object.client_reference_id
     if (reservationId) {
+      const alreadyProcessed = await env.DB.prepare(`SELECT id FROM audit_log
+        WHERE action = 'reservation.deposit_paid' AND target_id = ?1 LIMIT 1`).bind(reservationId).first()
       await env.DB.batch([
         env.DB.prepare(`UPDATE clubhouse_reservations SET stripe_checkout_session_id = ?1,
           stripe_payment_intent_id = ?2, deposit_status = 'held', deposit_collected_cents = 10000,
@@ -1625,6 +1643,15 @@ async function stripeWebhook(request, env) {
           WHERE NOT EXISTS (SELECT 1 FROM audit_log WHERE action = 'reservation.deposit_paid' AND target_id = ?1)`)
           .bind(reservationId, JSON.stringify({ checkoutSessionId: object.id, paymentIntentId: object.payment_intent, amount: 10000 })),
       ])
+      if (!alreadyProcessed) {
+        try {
+          const details = await reservationNotificationDetails(env, reservationId)
+          if (details) await sendTransactionalEmail(env, await depositRecipients(env),
+            `Clubhouse deposit paid: ${details.eventName}`,
+            `<p>A resident paid the clubhouse security deposit.</p><p><strong>Resident:</strong> ${escapeHtml(details.residentName)}<br><strong>Property:</strong> ${escapeHtml(details.address)}<br><strong>Event:</strong> ${escapeHtml(details.eventName)}<br><strong>Schedule:</strong> ${escapeHtml(details.startsAt)} through ${escapeHtml(details.endsAt)}<br><strong>Collected:</strong> $100.00<br><strong>Refundable after inspection:</strong> $96.80</p><p>The $3.20 processing fee is nonrefundable.</p>`,
+            'clubhouse-deposit-paid', null, false)
+        } catch (error) { console.error(JSON.stringify({ message: 'Deposit payment notification failed', reservationId, detail: String(error) })) }
+      }
     }
   } else if (event.type === 'checkout.session.expired') {
     await env.DB.prepare(`UPDATE clubhouse_reservations SET stripe_checkout_session_id = NULL,
@@ -1654,6 +1681,13 @@ async function decideDeposit(request, env, reservationId) {
       env.DB.prepare(`INSERT INTO audit_log (actor_user_id, action, target_type, target_id, details_json)
         VALUES (?1, 'reservation.deposit_retained', 'reservation', ?2, ?3)`).bind(admin.id, reservationId, JSON.stringify({ reason })),
     ])
+    try {
+      const details = await reservationNotificationDetails(env, reservationId)
+      if (details) await sendTransactionalEmail(env, await depositRecipients(env, true),
+        `Clubhouse deposit retained: ${details.eventName}`,
+        `<p>The refundable portion of a clubhouse deposit was not approved for refund.</p><p><strong>Resident:</strong> ${escapeHtml(details.residentName)}<br><strong>Property:</strong> ${escapeHtml(details.address)}<br><strong>Event:</strong> ${escapeHtml(details.eventName)}<br><strong>Amount retained:</strong> $96.80<br><strong>Reason:</strong> ${escapeHtml(reason)}</p>`,
+        'clubhouse-deposit-retained', null, false)
+    } catch (error) { console.error(JSON.stringify({ message: 'Deposit retention notification failed', reservationId, detail: String(error) })) }
     return json({ status: 'forfeited' })
   }
   if (action !== 'refund') throw new ResponseError('Select refund or retain.', 400)
@@ -1666,6 +1700,13 @@ async function decideDeposit(request, env, reservationId) {
       VALUES (?1, 'reservation.deposit_refunded', 'reservation', ?2, ?3)`).bind(admin.id, reservationId,
       JSON.stringify({ refundId: refund.id, amount: 9680, processingFee: 320 })),
   ])
+  try {
+    const details = await reservationNotificationDetails(env, reservationId)
+    if (details) await sendTransactionalEmail(env, await depositRecipients(env),
+      `Clubhouse deposit refunded: ${details.eventName}`,
+      `<p>A $96.80 clubhouse security-deposit refund was submitted through Stripe.</p><p><strong>Resident:</strong> ${escapeHtml(details.residentName)}<br><strong>Property:</strong> ${escapeHtml(details.address)}<br><strong>Event:</strong> ${escapeHtml(details.eventName)}<br><strong>Refund:</strong> $96.80<br><strong>Nonrefundable processing fee:</strong> $3.20</p>`,
+      'clubhouse-deposit-refunded', null, false)
+  } catch (error) { console.error(JSON.stringify({ message: 'Deposit refund notification failed', reservationId, detail: String(error) })) }
   return json({ status: 'released', refundedCents: 9680 })
 }
 
