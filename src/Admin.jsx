@@ -102,6 +102,7 @@ export default function Admin() {
   const [notice, setNotice] = useState('')
   const [selectedProperty, setSelectedProperty] = useState(null)
   const [propertyQuery, setPropertyQuery] = useState('')
+  const [accountQuery, setAccountQuery] = useState('')
 
   async function load() {
     const [{ user: currentUser }, { users }, dashboard] = await Promise.all([api('/api/auth/session'), api('/api/admin/users'), api('/api/admin/dashboard')])
@@ -385,6 +386,15 @@ export default function Admin() {
   const tabs = ['overview', 'accounts', 'properties', 'access', 'in the know', 'quick links', 'announcements', 'events', 'documents', 'photos', 'reservations', 'messages']
   const normalizedPropertyQuery = propertyQuery.trim().toLowerCase()
   const visibleProperties = data.properties.filter((property) => `${property.address} ${property.residentNames || ''}`.toLowerCase().includes(normalizedPropertyQuery))
+  const normalizedAccountQuery = accountQuery.trim().toLowerCase()
+  const visibleAccounts = accounts.filter((account) => {
+    const roles = [account.role, account.residentType, account.status,
+      account.isBoardMember ? 'board member' : '', account.isAccMember ? 'acc committee' : '',
+      account.isTreasurer ? 'treasurer' : '', account.isAmenitiesCoordinator ? 'amenities coordinator' : '',
+      account.isPresident ? 'president' : '', account.isVicePresident ? 'vice president' : '',
+      account.isSecretary ? 'secretary' : ''].join(' ')
+    return `${account.firstName} ${account.lastName} ${account.email} ${account.address} ${roles}`.toLowerCase().includes(normalizedAccountQuery)
+  })
 
   return (
     <div className="portal-shell admin-shell">
@@ -447,15 +457,20 @@ export default function Admin() {
         {tab === 'accounts' && (
           <section>
             <div className="account-tools">
-              <p>{accounts.length} resident accounts</p>
+              <label>
+                Find an account
+                <input type="search" placeholder="Search name, email, address, or role" value={accountQuery} onChange={(event) => setAccountQuery(event.target.value)} />
+              </label>
+              <p>{visibleAccounts.length} of {accounts.length} accounts</p>
               <a className="quiet-button" href="/api/admin/users.csv">
                 Download CSV
               </a>
             </div>
             <div className="resident-admin-list">
-              {accounts.map((account) => (
+              {visibleAccounts.map((account) => (
                 <AccountReview key={`${account.id}:${account.role}:${account.isBoardMember}:${account.isAccMember}`} account={account} currentUser={user} properties={data.properties} onStatus={updateAccount} onSave={updateAccountProfile} />
               ))}
+              {visibleAccounts.length === 0 && <p className="empty-state">No accounts match that search.</p>}
             </div>
           </section>
         )}
@@ -1377,26 +1392,20 @@ function AccountReview({ account, currentUser, properties, onStatus, onSave }) {
               ))}
             </select>
           </label>
-          <div className="field-row">
-            <label>
-              Property relationship
-              <select value={form.residentType} onChange={(event) => update('residentType', event.target.value)}>
-                <option value="owner">Property owner</option>
-                <option value="tenant">Renter</option>
-                <option value="household_member">Household member</option>
-              </select>
-            </label>
-            <label>
-              Access role
-              <select value={form.role} disabled={currentUser?.role !== 'super_admin' || account.id === currentUser?.id} onChange={(event) => update('role', event.target.value)}>
-                <option value="resident">Resident</option>
-                <option value="admin">Administrator</option>
-                {currentUser?.role === 'super_admin' && <option value="super_admin">Super administrator</option>}
-              </select>
-            </label>
-          </div>
+          <label>
+            Property relationship
+            <select value={form.residentType} onChange={(event) => update('residentType', event.target.value)}>
+              <option value="owner">Property owner</option>
+              <option value="tenant">Renter</option>
+              <option value="household_member">Household member</option>
+            </select>
+          </label>
           {currentUser?.role === 'super_admin' && (
             <div className="committee-options">
+              <label className="rules-check">
+                <input type="checkbox" checked={form.role !== 'resident'} disabled={account.role === 'super_admin'} onChange={(event) => update('role', event.target.checked ? 'admin' : 'resident')} />
+                <span>{account.role === 'super_admin' ? 'Super administrator' : 'Administrator access'}</span>
+              </label>
               <label className="rules-check">
                 <input type="checkbox" checked={form.isBoardMember} onChange={(event) => update('isBoardMember', event.target.checked)} />
                 <span>Board member</span>
@@ -1452,42 +1461,6 @@ function AccountReview({ account, currentUser, properties, onStatus, onSave }) {
           {account.status === 'pending' && (
             <button type="button" className="row-delete" onClick={() => onStatus(account.id, 'rejected')}>
               Reject
-            </button>
-          )}
-          {currentUser?.role === 'super_admin' && account.id !== currentUser.id && account.status === 'active' && account.role === 'resident' && (
-            <button type="button" className="role-button" onClick={() => onSave(account.id, { ...form, role: 'admin' })}>
-              Make administrator
-            </button>
-          )}
-          {currentUser?.role === 'super_admin' && account.role === 'admin' && (
-            <button type="button" className="row-delete" onClick={() => onSave(account.id, { ...form, role: 'resident' })}>
-              Remove administrator
-            </button>
-          )}
-          {currentUser?.role === 'super_admin' && (
-            <button
-              type="button"
-              onClick={() =>
-                onSave(account.id, {
-                  ...form,
-                  isBoardMember: !account.isBoardMember,
-                })
-              }
-            >
-              {account.isBoardMember ? 'Remove from board' : 'Add to board'}
-            </button>
-          )}
-          {currentUser?.role === 'super_admin' && (
-            <button
-              type="button"
-              onClick={() =>
-                onSave(account.id, {
-                  ...form,
-                  isAccMember: !account.isAccMember,
-                })
-              }
-            >
-              {account.isAccMember ? 'Remove from ACC' : 'Add to ACC'}
             </button>
           )}
         </div>
