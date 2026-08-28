@@ -192,6 +192,16 @@ function ResidentHome({ user, onLogout }) {
     }
   }
 
+  async function payDeposit(id) {
+    setError('')
+    try {
+      const checkout = await api(`/api/portal/reservations/${id}/deposit-checkout`, { method: 'POST' })
+      window.location.assign(checkout.url)
+    } catch (requestError) {
+      setError(requestError.message)
+    }
+  }
+
   async function savePreferences(event) {
     event.preventDefault()
     setError('')
@@ -579,7 +589,7 @@ function ResidentHome({ user, onLogout }) {
                       })
                     }
                   />
-                  <span>I have read and agree to the Reservation Agreement and cleaning checklist. I accept responsibility for the clubhouse, grounds, guests, damages, and the $100 reservation deposit.</span>
+                    <span>I have read and agree to the Reservation Agreement and cleaning checklist. I accept responsibility for the clubhouse, grounds, guests, damages, and the $100 security deposit. I understand that Stripe's $3.20 processing fee is nonrefundable and the standard refund is $96.80.</span>
                 </label>
                 <button className="primary-button">Submit request</button>
               </form>
@@ -600,6 +610,12 @@ function ResidentHome({ user, onLogout }) {
                   <p>
                     {item.eventType} | {item.attendeeCount} attendees | {item.cleaningMethod === 'professional' ? 'Professional cleaner' : 'Self-cleaning'}
                   </p>
+                  {item.status === 'approved' && item.depositStatus === 'pending' && (
+                    <div className="deposit-callout"><strong>$100 security deposit required</strong><p>$3.20 is a nonrefundable Stripe processing fee. After a satisfactory inspection, the standard refund is $96.80.</p><button type="button" className="primary-button" onClick={() => payDeposit(item.id)}>Pay deposit securely</button></div>
+                  )}
+                  {item.depositStatus === 'held' && <p className="deposit-status"><strong>Deposit paid:</strong> $100.00 collected; $96.80 refundable.</p>}
+                  {item.depositStatus === 'released' && <p className="deposit-status"><strong>Deposit refunded:</strong> ${(item.depositRefundedCents / 100).toFixed(2)}. Processing fee was nonrefundable.</p>}
+                  {item.depositStatus === 'forfeited' && <p className="decision-reason"><strong>Deposit retained:</strong> {item.depositDecisionReason || 'Contact the HOA for details.'}</p>}
                   {item.decisionReason && (
                     <p className="decision-reason">
                       <strong>Decision reason:</strong> {item.decisionReason}

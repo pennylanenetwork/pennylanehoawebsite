@@ -253,11 +253,45 @@ async function notifyReservationAdmins(env, user, reservation) {
 async function notifyReservationDecision(env, reservation, approved) {
   const subject = approved ? 'Your clubhouse reservation was approved' : 'Your clubhouse reservation was denied'
   const decision = approved
-    ? '<p>Your request has been approved and added to the members calendar.</p>'
+    ? '<p>Your request has been approved and added to the members calendar. Sign in to the resident portal to pay the required $100 security deposit. The $3.20 processing fee is nonrefundable; the standard refund after a satisfactory inspection is $96.80.</p>'
     : `<p>Your request was denied.</p><p><strong>Reason:</strong> ${escapeHtml(reservation.decisionReason)}</p>`
   await sendTransactionalEmail(env, [{ email: reservation.email, name: reservation.residentName }], subject,
     `<p>Hello ${escapeHtml(reservation.firstName)},</p>${decision}<p><strong>${escapeHtml(reservation.eventName)}</strong><br>${escapeHtml(reservation.startsAt)} through ${escapeHtml(reservation.endsAt)}</p><p>You can review your reservation history in the resident portal.</p>`,
     approved ? 'reservation-approved' : 'reservation-denied')
+}
+
+async function stripeRequest(env, path, parameters, idempotencyKey = '') {
+  if (!env.STRIPE_SECRET_KEY) throw new ResponseError('Stripe is not configured.', 503)
+  const response = await fetch(`https://api.stripe.com/v1/${path}`, {
+    method: 'POST',
+    headers: {
+      authorization: `Bearer ${env.STRIPE_SECRET_KEY}`,
+      'content-type': 'application/x-www-form-urlencoded',
+      ...(idempotencyKey ? { 'idempotency-key': idempotencyKey } : {}),
+    },
+    body: new URLSearchParams(parameters),
+  })
+  const result = await response.json()
+  if (!response.ok) throw new ResponseError(result?.error?.message || 'Stripe could not process the request.', 502)
+  return result
+}
+
+function constantTimeHexEqual(left, right) {
+  if (left.length !== right.length) return false
+  let difference = 0
+  for (let index = 0; index < left.length; index += 1) difference |= left.charCodeAt(index) ^ right.charCodeAt(index)
+  return difference === 0
+}
+
+async function verifyStripeWebhook(request, env, payload) {
+  if (!env.STRIPE_WEBHOOK_SECRET) throw new ResponseError('Stripe webhook is not configured.', 503)
+  const parts = Object.fromEntries((request.headers.get('stripe-signature') || '').split(',').map((part) => part.split('=', 2)))
+  const timestamp = Number(parts.t)
+  if (!timestamp || Math.abs(Date.now() / 1000 - timestamp) > 300 || !parts.v1) throw new ResponseError('Invalid Stripe signature.', 400)
+  const key = await crypto.subtle.importKey('raw', new TextEncoder().encode(env.STRIPE_WEBHOOK_SECRET), { name: 'HMAC', hash: 'SHA-256' }, false, ['sign'])
+  const signature = await crypto.subtle.sign('HMAC', key, new TextEncoder().encode(`${timestamp}.${payload}`))
+  const expected = [...new Uint8Array(signature)].map((byte) => byte.toString(16).padStart(2, '0')).join('')
+  if (!constantTimeHexEqual(expected, parts.v1)) throw new ResponseError('Invalid Stripe signature.', 400)
 }
 
 async function createSessionResponse(request, env, userId, redirectTo = null) {
@@ -487,7 +521,10 @@ async function portalDashboard(request, env) {
       FROM documents ORDER BY category, title`),
     env.DB.prepare(`SELECT id, event_name AS eventName, event_type AS eventType, starts_at AS startsAt, ends_at AS endsAt,
       attendee_count AS attendeeCount, cleaning_method AS cleaningMethod, notes, status,
-      decision_reason AS decisionReason, reviewed_at AS reviewedAt, deposit_status AS depositStatus
+      decision_reason AS decisionReason, reviewed_at AS reviewedAt, deposit_status AS depositStatus,
+      deposit_collected_cents AS depositCollectedCents, deposit_processing_fee_cents AS depositProcessingFeeCents,
+      deposit_refundable_cents AS depositRefundableCents, deposit_refunded_cents AS depositRefundedCents,
+      deposit_decision_reason AS depositDecisionReason
       FROM clubhouse_reservations WHERE user_id = ?1 ORDER BY starts_at DESC`).bind(user.id),
     env.DB.prepare(`SELECT id, COALESCE(routing_group, category) AS category, message, status, created_at AS createdAt
       FROM contact_messages WHERE user_id = ?1 ORDER BY created_at DESC LIMIT 100`).bind(user.id),
@@ -579,7 +616,11 @@ async function adminDashboard(request, env) {
       clubhouse_reservations.attendee_count AS attendeeCount, clubhouse_reservations.event_type AS eventType,
       clubhouse_reservations.cleaning_method AS cleaningMethod, clubhouse_reservations.notes,
       clubhouse_reservations.status, clubhouse_reservations.decision_reason AS decisionReason,
-      clubhouse_reservations.override_reason AS overrideReason,
+      clubhouse_reservations.override_reason AS overrideReason, clubhouse_reservations.deposit_status AS depositStatus,
+      clubhouse_reservations.deposit_collected_cents AS depositCollectedCents,
+      clubhouse_reservations.deposit_refundable_cents AS depositRefundableCents,
+      clubhouse_reservations.deposit_refunded_cents AS depositRefundedCents,
+      clubhouse_reservations.deposit_decision_reason AS depositDecisionReason,
       clubhouse_reservations.created_at AS requestedAt, clubhouse_reservations.reviewed_at AS reviewedAt,
       users.first_name || ' ' || users.last_name AS residentName, users.email,
       properties.street_number || ' ' || properties.street_name || ' ' || properties.street_suffix AS address
@@ -1498,6 +1539,7 @@ async function decideReservation(request, env, reservationId) {
         VALUES (?1, ?2, ?3, ?4, ?5, 'members', 'clubhouse', ?6)`).bind(eventId,
         `Clubhouse reserved: ${reservation.event_name}`, reservation.event_type, reservation.starts_at, reservation.ends_at, reservation.user_id),
       env.DB.prepare(`UPDATE clubhouse_reservations SET event_id = ?1, status = 'approved', decision_reason = NULL,
+        deposit_status = 'pending',
         override_reason = ?2, override_by = CASE WHEN ?2 IS NULL THEN NULL ELSE ?3 END,
         reviewed_by = ?3, reviewed_at = CURRENT_TIMESTAMP, updated_at = CURRENT_TIMESTAMP WHERE id = ?4`)
         .bind(eventId, !availability.available ? overrideReason : null, admin.id, reservationId),
@@ -1526,15 +1568,105 @@ async function decideReservation(request, env, reservationId) {
 
 async function cancelReservation(request, env, reservationId) {
   const user = await requireUser(request, env)
-  const reservation = await env.DB.prepare('SELECT id, event_id AS eventId, user_id AS userId, status FROM clubhouse_reservations WHERE id = ?1').bind(reservationId).first()
+  const reservation = await env.DB.prepare('SELECT id, event_id AS eventId, user_id AS userId, status, deposit_status AS depositStatus FROM clubhouse_reservations WHERE id = ?1').bind(reservationId).first()
   if (!reservation) throw new ResponseError('Reservation not found.', 404)
   if (reservation.userId !== user.id && !['admin', 'super_admin'].includes(user.role)) throw new ResponseError('Not permitted.', 403)
   if (reservation.status === 'cancelled') return json({ status: 'cancelled' })
+  if (reservation.depositStatus === 'held') throw new ResponseError('Resolve the paid security deposit before cancelling this reservation.', 409)
   if (!['pending', 'approved'].includes(reservation.status)) throw new ResponseError('This reservation can no longer be cancelled.', 409)
   const statements = [env.DB.prepare("UPDATE clubhouse_reservations SET status = 'cancelled', updated_at = CURRENT_TIMESTAMP WHERE id = ?1").bind(reservationId)]
   if (reservation.eventId) statements.push(env.DB.prepare("UPDATE events SET status = 'cancelled', updated_at = CURRENT_TIMESTAMP WHERE id = ?1").bind(reservation.eventId))
   await env.DB.batch(statements)
   return json({ status: 'cancelled' })
+}
+
+async function createDepositCheckout(request, env, reservationId) {
+  const user = await requireUser(request, env)
+  const reservation = await env.DB.prepare(`SELECT id, event_name AS eventName, status, deposit_status AS depositStatus,
+    stripe_checkout_session_id AS checkoutSessionId FROM clubhouse_reservations WHERE id = ?1 AND user_id = ?2`)
+    .bind(reservationId, user.id).first()
+  if (!reservation) throw new ResponseError('Reservation not found.', 404)
+  if (reservation.status !== 'approved' || reservation.depositStatus !== 'pending') throw new ResponseError('This reservation is not awaiting a deposit.', 409)
+  const origin = new URL(request.url).origin
+  const session = await stripeRequest(env, 'checkout/sessions', {
+    mode: 'payment',
+    'payment_method_types[0]': 'card',
+    'line_items[0][price_data][currency]': 'usd',
+    'line_items[0][price_data][unit_amount]': '10000',
+    'line_items[0][price_data][product_data][name]': 'Penny Lane HOA clubhouse security deposit',
+    'line_items[0][price_data][product_data][description]': '$96.80 refundable after the event; $3.20 processing fee is nonrefundable.',
+    'line_items[0][quantity]': '1',
+    customer_email: user.email,
+    client_reference_id: reservation.id,
+    'metadata[reservation_id]': reservation.id,
+    success_url: `${origin}/portal?deposit=success`,
+    cancel_url: `${origin}/portal?deposit=cancelled`,
+  }, `clubhouse-checkout-${reservation.id}`)
+  await env.DB.prepare(`UPDATE clubhouse_reservations SET stripe_checkout_session_id = ?1,
+    updated_at = CURRENT_TIMESTAMP WHERE id = ?2`).bind(session.id, reservation.id).run()
+  return json({ url: session.url })
+}
+
+async function stripeWebhook(request, env) {
+  const payload = await request.text()
+  await verifyStripeWebhook(request, env, payload)
+  const event = JSON.parse(payload)
+  const object = event.data?.object || {}
+  if (event.type === 'checkout.session.completed' && object.payment_status === 'paid') {
+    const reservationId = object.metadata?.reservation_id || object.client_reference_id
+    if (reservationId) {
+      await env.DB.batch([
+        env.DB.prepare(`UPDATE clubhouse_reservations SET stripe_checkout_session_id = ?1,
+          stripe_payment_intent_id = ?2, deposit_status = 'held', deposit_collected_cents = 10000,
+          deposit_paid_at = COALESCE(deposit_paid_at, CURRENT_TIMESTAMP), updated_at = CURRENT_TIMESTAMP
+          WHERE id = ?3 AND deposit_status = 'pending'`).bind(object.id, object.payment_intent, reservationId),
+        env.DB.prepare(`INSERT INTO audit_log (action, target_type, target_id, details_json)
+          SELECT 'reservation.deposit_paid', 'reservation', ?1, ?2
+          WHERE NOT EXISTS (SELECT 1 FROM audit_log WHERE action = 'reservation.deposit_paid' AND target_id = ?1)`)
+          .bind(reservationId, JSON.stringify({ checkoutSessionId: object.id, paymentIntentId: object.payment_intent, amount: 10000 })),
+      ])
+    }
+  } else if (event.type === 'checkout.session.expired') {
+    await env.DB.prepare(`UPDATE clubhouse_reservations SET stripe_checkout_session_id = NULL,
+      updated_at = CURRENT_TIMESTAMP WHERE stripe_checkout_session_id = ?1 AND deposit_status = 'pending'`).bind(object.id).run()
+  } else if (event.type === 'charge.refunded') {
+    const paymentIntentId = object.payment_intent
+    if (paymentIntentId) await env.DB.prepare(`UPDATE clubhouse_reservations SET deposit_refunded_cents = ?1,
+      updated_at = CURRENT_TIMESTAMP WHERE stripe_payment_intent_id = ?2`).bind(object.amount_refunded || 0, paymentIntentId).run()
+  }
+  return json({ received: true })
+}
+
+async function decideDeposit(request, env, reservationId) {
+  const admin = await requireSuperAdmin(request, env)
+  const body = await readJson(request)
+  const action = body.action
+  const reason = cleanText(body.reason, 1000)
+  const reservation = await env.DB.prepare(`SELECT id, stripe_payment_intent_id AS paymentIntentId,
+    deposit_status AS depositStatus FROM clubhouse_reservations WHERE id = ?1`).bind(reservationId).first()
+  if (!reservation) throw new ResponseError('Reservation not found.', 404)
+  if (reservation.depositStatus !== 'held' || !reservation.paymentIntentId) throw new ResponseError('This reservation does not have a refundable deposit.', 409)
+  if (action === 'retain') {
+    if (!reason) throw new ResponseError('Enter the reason for retaining the deposit.', 400)
+    await env.DB.batch([
+      env.DB.prepare(`UPDATE clubhouse_reservations SET deposit_status = 'forfeited', deposit_decision_reason = ?1,
+        deposit_decided_by = ?2, deposit_decided_at = CURRENT_TIMESTAMP, updated_at = CURRENT_TIMESTAMP WHERE id = ?3`).bind(reason, admin.id, reservationId),
+      env.DB.prepare(`INSERT INTO audit_log (actor_user_id, action, target_type, target_id, details_json)
+        VALUES (?1, 'reservation.deposit_retained', 'reservation', ?2, ?3)`).bind(admin.id, reservationId, JSON.stringify({ reason })),
+    ])
+    return json({ status: 'forfeited' })
+  }
+  if (action !== 'refund') throw new ResponseError('Select refund or retain.', 400)
+  const refund = await stripeRequest(env, 'refunds', { payment_intent: reservation.paymentIntentId, amount: '9680', 'metadata[reservation_id]': reservationId }, `clubhouse-refund-${reservationId}`)
+  await env.DB.batch([
+    env.DB.prepare(`UPDATE clubhouse_reservations SET deposit_status = 'released', deposit_refunded_cents = 9680,
+      deposit_decision_reason = ?1, deposit_decided_by = ?2, deposit_decided_at = CURRENT_TIMESTAMP,
+      updated_at = CURRENT_TIMESTAMP WHERE id = ?3`).bind(reason || 'Clubhouse inspection completed', admin.id, reservationId),
+    env.DB.prepare(`INSERT INTO audit_log (actor_user_id, action, target_type, target_id, details_json)
+      VALUES (?1, 'reservation.deposit_refunded', 'reservation', ?2, ?3)`).bind(admin.id, reservationId,
+      JSON.stringify({ refundId: refund.id, amount: 9680, processingFee: 320 })),
+  ])
+  return json({ status: 'released', refundedCents: 9680 })
 }
 
 async function register(request, env) {
@@ -1878,6 +2010,7 @@ async function exportPoolCardsCsv(request, env) {
 
 async function handleApi(request, env) {
   const url = new URL(request.url)
+  if (request.method === 'POST' && url.pathname === '/api/stripe/webhook') return stripeWebhook(request, env)
   if (['POST', 'PUT', 'PATCH', 'DELETE'].includes(request.method) && !requireSameOrigin(request)) {
     return json({ error: 'Invalid request origin.' }, { status: 403 })
   }
@@ -1913,6 +2046,8 @@ async function handleApi(request, env) {
   if (request.method === 'PATCH' && url.pathname === '/api/portal/preferences') return updateNotificationPreferences(request, env)
   if (request.method === 'POST' && url.pathname === '/api/portal/household') return requestHouseholdMember(request, env)
   if (request.method === 'POST' && url.pathname === '/api/portal/reservations') return createReservation(request, env)
+  const reservationCheckoutMatch = url.pathname.match(/^\/api\/portal\/reservations\/([^/]+)\/deposit-checkout$/)
+  if (request.method === 'POST' && reservationCheckoutMatch) return createDepositCheckout(request, env, reservationCheckoutMatch[1])
   const reservationMatch = url.pathname.match(/^\/api\/portal\/reservations\/([^/]+)$/)
   if (request.method === 'DELETE' && reservationMatch) return cancelReservation(request, env, reservationMatch[1])
   if (request.method === 'GET' && url.pathname === '/api/admin/users') return listUsers(request, env)
@@ -1955,6 +2090,8 @@ async function handleApi(request, env) {
   const adminReservationMatch = url.pathname.match(/^\/api\/admin\/reservations\/([^/]+)$/)
   if (adminReservationMatch && request.method === 'PATCH') return decideReservation(request, env, adminReservationMatch[1])
   if (adminReservationMatch && request.method === 'DELETE') return cancelReservation(request, env, adminReservationMatch[1])
+  const reservationDepositMatch = url.pathname.match(/^\/api\/admin\/reservations\/([^/]+)\/deposit$/)
+  if (reservationDepositMatch && request.method === 'POST') return decideDeposit(request, env, reservationDepositMatch[1])
   const permanentReservationMatch = url.pathname.match(/^\/api\/admin\/reservations\/([^/]+)\/permanent$/)
   if (permanentReservationMatch && request.method === 'DELETE') return deleteReservationPermanently(request, env, permanentReservationMatch[1])
   const contactMessageMatch = url.pathname.match(/^\/api\/admin\/messages\/([^/]+)$/)

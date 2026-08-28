@@ -256,6 +256,20 @@ export default function Admin() {
     }
   }
 
+  async function decideDeposit(id, action, reason = '') {
+    setError('')
+    setNotice('')
+    try {
+      await api(`/api/admin/reservations/${id}/deposit`, { method: 'POST', body: JSON.stringify({ action, reason }) })
+      setNotice(action === 'refund' ? '$96.80 refund submitted to Stripe.' : 'The deposit was marked as retained.')
+      await load()
+      return true
+    } catch (requestError) {
+      setError(requestError.message)
+      return false
+    }
+  }
+
   async function saveClubhouseSettings(settings) {
     setError('')
     setNotice('')
@@ -672,7 +686,7 @@ export default function Admin() {
             <ClubhouseControls settings={data.clubhouse} blackouts={data.blackouts} onSave={saveClubhouseSettings} onAddBlackout={addBlackout} onDeleteBlackout={(id) => remove('clubhouse/blackouts', id, 'Remove this clubhouse blackout period?')} />
             <div className="reservation-admin-list">
               {data.reservations.map((item) => (
-                <ReservationReview key={item.id} item={item} onDecide={decideReservation} onCancel={() => remove('reservations', item.id, 'Cancel this clubhouse reservation?')} onDelete={user?.role === 'super_admin' ? () => remove('reservations', `${item.id}/permanent`, 'Permanently delete this reservation and its calendar event? This cannot be undone.') : null} />
+                <ReservationReview key={item.id} item={item} onDecide={decideReservation} onDeposit={user?.role === 'super_admin' ? decideDeposit : null} onCancel={() => remove('reservations', item.id, 'Cancel this clubhouse reservation?')} onDelete={user?.role === 'super_admin' ? () => remove('reservations', `${item.id}/permanent`, 'Permanently delete this reservation and its calendar event? This cannot be undone.') : null} />
               ))}
               {data.reservations.length === 0 && <p className="empty-state">No clubhouse reservation requests yet.</p>}
             </div>
@@ -1045,10 +1059,11 @@ function DataRow({ title, detail, meta, actions, onOpen }) {
   )
 }
 
-function ReservationReview({ item, onDecide, onCancel, onDelete }) {
+function ReservationReview({ item, onDecide, onDeposit, onCancel, onDelete }) {
   const [reason, setReason] = useState('')
   const [overrideConflicts, setOverrideConflicts] = useState(false)
   const [overrideReason, setOverrideReason] = useState('')
+  const [depositReason, setDepositReason] = useState('')
   return (
     <article className={`reservation-review ${item.status === 'pending' ? 'is-pending' : ''}`}>
       <header>
@@ -1095,6 +1110,8 @@ function ReservationReview({ item, onDecide, onCancel, onDelete }) {
           <strong>Availability override:</strong> {item.overrideReason}
         </p>
       )}
+      <div className="deposit-admin-status"><strong>Security deposit</strong><span className={`status status-${item.depositStatus}`}>{item.depositStatus?.replace('_', ' ')}</span><small>$100.00 charge | $3.20 nonrefundable fee | $96.80 refundable</small>{item.depositDecisionReason && <p>{item.depositDecisionReason}</p>}</div>
+      {item.depositStatus === 'held' && onDeposit && <div className="deposit-actions"><label>Reason or inspection note<textarea maxLength="1000" value={depositReason} onChange={(event) => setDepositReason(event.target.value)} /></label><button type="button" className="primary-button" onClick={() => onDeposit(item.id, 'refund', depositReason)}>Refund $96.80</button><button type="button" className="row-delete" disabled={!depositReason.trim()} onClick={() => onDeposit(item.id, 'retain', depositReason)}>Retain deposit</button></div>}
       {item.status === 'pending' && (
         <>
           <div className="override-controls">
