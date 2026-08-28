@@ -164,6 +164,20 @@ function ResidentHome({ user, onLogout }) {
       .catch((requestError) => setError(requestError.message))
   }, [])
 
+  useEffect(() => {
+    const parameters = new URLSearchParams(window.location.search)
+    const reservationId = parameters.get('reservation')
+    if (parameters.get('deposit') !== 'success' || !reservationId) return
+    api(`/api/portal/reservations/${encodeURIComponent(reservationId)}/deposit-checkout`, { method: 'POST' })
+      .then(async (checkout) => {
+        if (!checkout.paid) throw new Error('Stripe has not confirmed this payment yet. Please refresh in a moment.')
+        setNotice('Your deposit is paid and the reservation is approved.')
+        window.history.replaceState({}, '', '/portal')
+        await load()
+      })
+      .catch((requestError) => setError(requestError.message))
+  }, [])
+
   async function reserve(event) {
     event.preventDefault()
     setError('')

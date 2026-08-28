@@ -1935,7 +1935,7 @@ async function createDepositCheckout(request, env, reservationId) {
     customer_email: user.email,
     client_reference_id: reservation.id,
     'metadata[reservation_id]': reservation.id,
-    success_url: `${origin}/portal?deposit=success`,
+    success_url: `${origin}/portal?deposit=success&reservation=${encodeURIComponent(reservation.id)}`,
     cancel_url: `${origin}/portal?deposit=cancelled`,
   }, `clubhouse-checkout-${reservation.id}-${crypto.randomUUID()}`)
   await env.DB.prepare(`UPDATE clubhouse_reservations SET stripe_checkout_session_id = ?1,
