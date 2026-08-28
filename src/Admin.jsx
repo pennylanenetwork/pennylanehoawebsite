@@ -103,6 +103,7 @@ export default function Admin() {
   const [selectedProperty, setSelectedProperty] = useState(null)
   const [propertyQuery, setPropertyQuery] = useState('')
   const [accountQuery, setAccountQuery] = useState('')
+  const [propertyEditorOpen, setPropertyEditorOpen] = useState(false)
 
   async function load() {
     const { user: currentUser } = await api('/api/auth/session')
@@ -177,6 +178,7 @@ export default function Admin() {
       })
       setForms({ ...forms, [kind]: emptyForms[kind] })
       setEditing(null)
+      if (kind === 'property') setPropertyEditorOpen(false)
       setNotice('Saved successfully.')
       await load()
     } catch (requestError) {
@@ -497,6 +499,9 @@ export default function Admin() {
         {tab === 'properties' && !selectedProperty && (
           <Workspace
             title="Add property"
+            collapsible
+            formOpen={propertyEditorOpen}
+            onToggleForm={() => setPropertyEditorOpen((open) => !open)}
             listHeader={
               <div className="property-search">
                 <label>
@@ -1079,13 +1084,15 @@ function Audience({ value, onChange }) {
   )
 }
 
-function Workspace({ title, form, rows, listHeader = null }) {
+function Workspace({ title, form, rows, listHeader = null, collapsible = false, formOpen = true, onToggleForm = null }) {
+  const showForm = !collapsible || formOpen
   return (
-    <div className="workspace-grid">
-      <section className="editor-panel">
-        <h2>{title}</h2>
+    <div className={`workspace-grid${showForm ? '' : ' is-collapsed'}`}>
+      {collapsible && !showForm && <div className="workspace-add-bar"><button type="button" className="primary-button" onClick={onToggleForm}>Add property</button></div>}
+      {showForm && <section className="editor-panel">
+        <div className="editor-heading"><h2>{title}</h2>{collapsible && <button type="button" className="quiet-button" onClick={onToggleForm}>Close</button>}</div>
         {form}
-      </section>
+      </section>}
       <section className="data-list">
         {listHeader}
         {rows}
