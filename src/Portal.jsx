@@ -71,11 +71,8 @@ function PortalHeader({ user }) {
   const hasStaffAccess = user && (user.role !== 'resident' || user.isBoardMember || user.isAccMember || user.isTreasurer || user.isAmenitiesCoordinator)
   return (
     <header className="portal-header">
-      <a className="brand" href="/" aria-label="Penny Lane HOA home">
-        <span className="brand-mark">PL</span>
-        <span>
-          Penny Lane <em>HOA</em>
-        </span>
+      <a className="portal-logo" href="/" aria-label="Penny Lane HOA home">
+        <img src="/penny-lane-logo.png" alt="Penny Lane" />
       </a>
       {hasStaffAccess ? (
         <nav className="portal-view-nav" aria-label="Switch portal view">
