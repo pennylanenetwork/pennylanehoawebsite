@@ -233,7 +233,7 @@ async function activeAdminRecipients(env) {
 
 async function reservationManagerRecipients(env) {
   const result = await env.DB.prepare(`SELECT email, first_name AS firstName, last_name AS lastName FROM users
-    WHERE status = 'active' AND (role IN ('admin', 'super_admin') OR is_amenities_coordinator = 1) ORDER BY id`).all()
+    WHERE status = 'active' AND is_amenities_coordinator = 1 ORDER BY id`).all()
   return result.results.map((user) => ({ email: user.email, name: `${user.firstName} ${user.lastName}`.trim() }))
 }
 
