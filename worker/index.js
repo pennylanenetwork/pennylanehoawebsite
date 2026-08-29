@@ -1127,6 +1127,24 @@ async function revokeGuestRegistration(request, env, id) {
   return json({ status: 'revoked' })
 }
 
+async function deleteGuestRegistration(request, env, id) {
+  const admin = await requireSuperAdmin(request, env)
+  const guest = await env.DB.prepare(`SELECT id, property_id AS propertyId, status, ends_on AS endsOn
+    FROM guest_registrations WHERE id = ?1`).bind(id).first()
+  if (!guest) throw new ResponseError('Guest registration not found.', 404)
+  const archived = guest.status === 'revoked' || (guest.status === 'active' && guest.endsOn < new Date().toISOString().slice(0, 10))
+  if (!archived) throw new ResponseError('Active guest registrations must be revoked before deletion.', 409)
+  await env.DB.batch([
+    env.DB.prepare(`DELETE FROM audit_log WHERE target_type = 'property' AND details_json LIKE ?1`)
+      .bind(`%"guestRegistrationId":"${id}"%`),
+    env.DB.prepare('DELETE FROM guest_registrations WHERE id = ?1').bind(id),
+    env.DB.prepare(`INSERT INTO audit_log (actor_user_id, action, target_type, target_id, details_json)
+      VALUES (?1, 'guest.deleted', 'property', ?2, ?3)`).bind(admin.id, String(guest.propertyId),
+      JSON.stringify({ guestRegistrationId: id })),
+  ])
+  return json({ status: 'deleted' })
+}
+
 async function updateContactMessage(request, env, id) {
   const admin = await requireStaff(request, env)
   const body = await readJson(request)
@@ -2456,6 +2474,8 @@ async function handleApi(request, env) {
   if (request.method === 'POST' && url.pathname === '/api/admin/documents') return createDocument(request, env)
   if (request.method === 'POST' && url.pathname === '/api/admin/documents/upload') return uploadDocument(request, env)
   if (request.method === 'POST' && url.pathname === '/api/admin/gallery') return uploadGalleryPhoto(request, env)
+  const adminGuestMatch = url.pathname.match(/^\/api\/admin\/guests\/([^/]+)$/)
+  if (adminGuestMatch && request.method === 'DELETE') return deleteGuestRegistration(request, env, adminGuestMatch[1])
   if (request.method === 'PATCH' && url.pathname === '/api/admin/clubhouse/settings') return updateClubhouseSettings(request, env)
   if (request.method === 'POST' && url.pathname === '/api/admin/clubhouse/blackouts') return createClubhouseBlackout(request, env)
   const blackoutMatch = url.pathname.match(/^\/api\/admin\/clubhouse\/blackouts\/([^/]+)$/)

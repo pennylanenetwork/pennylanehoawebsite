@@ -524,7 +524,7 @@ export default function Admin() {
           />
         )}
 
-        {tab === 'access' && <AccessWorkspace guests={data.guests} poolCards={data.poolCards} />}
+        {tab === 'access' && <AccessWorkspace guests={data.guests} poolCards={data.poolCards} currentUser={user} onDeleteGuest={(guest) => remove('guests', guest.id, `Permanently delete the archived guest registration for ${guest.guestName}? This cannot be undone.`)} />}
 
         {tab === 'in the know' && (
           <Workspace
@@ -955,19 +955,23 @@ function ClubhouseControls({ settings, blackouts, onSave, onAddBlackout, onDelet
   )
 }
 
-function AccessWorkspace({ guests, poolCards }) {
+function AccessWorkspace({ guests, poolCards, currentUser, onDeleteGuest }) {
   const [view, setView] = useState('guests')
   const [query, setQuery] = useState('')
-  const [status, setStatus] = useState('all')
+  const [status, setStatus] = useState('current')
   const [today] = useState(() => new Date().toISOString().slice(0, 10))
   const [weekFromToday] = useState(() => new Date(Date.now() + 7 * 86400000).toISOString().slice(0, 10))
   const source = view === 'guests' ? guests : poolCards
   const filtered = source.filter((item) => {
     const haystack = Object.values(item).join(' ').toLowerCase()
     const endingSoon = view === 'guests' && item.status === 'active' && item.endsOn >= today && item.endsOn <= weekFromToday
-    return (status === 'all' || item.status === status || (status === 'Ending within 7 days' && endingSoon)) && haystack.includes(query.trim().toLowerCase())
+    const statusMatches = status === 'all' || item.status === status
+      || (status === 'current' && item.status === 'active')
+      || (status === 'archived' && ['expired', 'revoked'].includes(item.status))
+      || (status === 'Ending within 7 days' && endingSoon)
+    return statusMatches && haystack.includes(query.trim().toLowerCase())
   })
-  const statuses = view === 'guests' ? ['active', 'Ending within 7 days', 'expired', 'revoked'] : ['active', 'lost', 'stolen', 'returned', 'deactivated']
+  const statuses = view === 'guests' ? [['current', 'Current'], ['Ending within 7 days', 'Ending within 7 days'], ['archived', 'Archived'], ['all', 'All statuses']] : [['all', 'All statuses'], ['active', 'Active'], ['lost', 'Lost'], ['stolen', 'Stolen'], ['returned', 'Returned'], ['deactivated', 'Deactivated']]
   return (
     <section className="access-workspace">
       <header>
@@ -977,7 +981,7 @@ function AccessWorkspace({ guests, poolCards }) {
             className={view === 'guests' ? 'active' : ''}
             onClick={() => {
               setView('guests')
-              setStatus('all')
+              setStatus('current')
             }}
           >
             Guests
@@ -1007,10 +1011,9 @@ function AccessWorkspace({ guests, poolCards }) {
         <label>
           Status
           <select value={status} onChange={(event) => setStatus(event.target.value)}>
-            <option value="all">All statuses</option>
-            {statuses.map((item) => (
-              <option value={item} key={item}>
-                {item}
+            {statuses.map(([value, label]) => (
+              <option value={value} key={value}>
+                {label}
               </option>
             ))}
           </select>
@@ -1032,6 +1035,9 @@ function AccessWorkspace({ guests, poolCards }) {
                     {item.startsOn} through {item.endsOn}
                   </small>
                   <span className={`status status-${item.status}`}>{item.status}</span>
+                  {currentUser?.role === 'super_admin' && ['expired', 'revoked'].includes(item.status) && (
+                    <button type="button" className="row-delete" onClick={() => onDeleteGuest(item)}>Delete permanently</button>
+                  )}
                 </div>
               </article>
             ))
