@@ -476,7 +476,7 @@ export default function Admin() {
             </div>
             <div className="resident-admin-list">
               {visibleAccounts.map((account) => (
-                <AccountReview key={`${account.id}:${account.role}:${account.isBoardMember}:${account.isAccMember}`} account={account} currentUser={user} properties={data.properties} onStatus={updateAccount} onSave={updateAccountProfile} />
+                <AccountReview key={`${account.id}:${account.role}:${account.isBoardMember}:${account.isAccMember}`} account={account} currentUser={user} properties={data.properties} onStatus={updateAccount} onSave={updateAccountProfile} onDelete={() => remove('users', account.id, `Permanently delete the account for ${account.firstName} ${account.lastName}? Their reservations, guest registrations, and pool agreement records will also be deleted. This cannot be undone.`)} />
               ))}
               {visibleAccounts.length === 0 && <p className="empty-state">No accounts match that search.</p>}
             </div>
@@ -1337,7 +1337,7 @@ function residentTypeLabel(value) {
   return 'Property owner'
 }
 
-function AccountReview({ account, currentUser, properties, onStatus, onSave }) {
+function AccountReview({ account, currentUser, properties, onStatus, onSave, onDelete }) {
   const [editing, setEditing] = useState(false)
   const [form, setForm] = useState({
     firstName: account.firstName,
@@ -1486,6 +1486,11 @@ function AccountReview({ account, currentUser, properties, onStatus, onSave }) {
           {account.status === 'pending' && (
             <button type="button" className="row-delete" onClick={() => onStatus(account.id, 'rejected')}>
               Reject
+            </button>
+          )}
+          {currentUser?.role === 'super_admin' && account.id !== currentUser.id && (
+            <button type="button" className="row-delete permanent-delete" onClick={onDelete}>
+              Delete account
             </button>
           )}
         </div>

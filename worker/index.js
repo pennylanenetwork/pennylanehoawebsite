@@ -2253,6 +2253,40 @@ async function updateUserProfile(request, env, targetId) {
   return json({ status: 'updated' })
 }
 
+async function deleteUserAccount(request, env, targetId) {
+  const admin = await requireSuperAdmin(request, env)
+  if (targetId === admin.id) throw new ResponseError('You cannot delete your own account.', 400)
+  const target = await env.DB.prepare(`SELECT id, email, first_name AS firstName, last_name AS lastName, role
+    FROM users WHERE id = ?1`).bind(targetId).first()
+  if (!target) throw new ResponseError('Account not found.', 404)
+  if (target.role === 'super_admin') {
+    const superAdminCount = await env.DB.prepare("SELECT COUNT(*) AS count FROM users WHERE role = 'super_admin' AND status = 'active'").first('count')
+    if (Number(superAdminCount) <= 1) throw new ResponseError('The final active super administrator cannot be deleted.', 409)
+  }
+  const unresolvedDeposit = await env.DB.prepare(`SELECT id FROM clubhouse_reservations
+    WHERE user_id = ?1 AND deposit_status = 'held' LIMIT 1`).bind(targetId).first()
+  if (unresolvedDeposit) throw new ResponseError('Resolve this resident\'s paid clubhouse deposit before deleting the account.', 409)
+  const reservationEvents = await env.DB.prepare(`SELECT event_id AS eventId FROM clubhouse_reservations
+    WHERE user_id = ?1 AND event_id IS NOT NULL`).bind(targetId).all()
+  const statements = [
+    env.DB.prepare(`INSERT INTO audit_log (actor_user_id, action, target_type, target_id, details_json)
+      VALUES (?1, 'account.deleted', 'user', ?2, ?3)`).bind(admin.id, targetId,
+      JSON.stringify({ email: target.email, name: `${target.firstName} ${target.lastName}`.trim() })),
+    env.DB.prepare('UPDATE announcements SET created_by = ?1 WHERE created_by = ?2').bind(admin.id, targetId),
+    env.DB.prepare('UPDATE events SET created_by = ?1 WHERE created_by = ?2').bind(admin.id, targetId),
+    env.DB.prepare('UPDATE documents SET created_by = ?1 WHERE created_by = ?2').bind(admin.id, targetId),
+    env.DB.prepare('UPDATE gallery_photos SET uploaded_by = ?1 WHERE uploaded_by = ?2').bind(admin.id, targetId),
+    env.DB.prepare('UPDATE clubhouse_blackouts SET created_by = ?1 WHERE created_by = ?2').bind(admin.id, targetId),
+    env.DB.prepare('DELETE FROM guest_registrations WHERE registered_by = ?1').bind(targetId),
+    env.DB.prepare('DELETE FROM pool_rules_agreements WHERE user_id = ?1').bind(targetId),
+    env.DB.prepare('DELETE FROM clubhouse_reservations WHERE user_id = ?1').bind(targetId),
+    ...reservationEvents.results.map(({ eventId }) => env.DB.prepare('DELETE FROM events WHERE id = ?1').bind(eventId)),
+    env.DB.prepare('DELETE FROM users WHERE id = ?1').bind(targetId),
+  ]
+  await env.DB.batch(statements)
+  return json({ status: 'deleted' })
+}
+
 async function updateNotificationPreferences(request, env) {
   const user = await requireUser(request, env)
   const body = await readJson(request)
@@ -2470,6 +2504,7 @@ async function handleApi(request, env) {
   if (request.method === 'PATCH' && statusMatch) return updateUserStatus(request, env, statusMatch[1])
   const userMatch = url.pathname.match(/^\/api\/admin\/users\/([^/]+)$/)
   if (request.method === 'PATCH' && userMatch) return updateUserProfile(request, env, userMatch[1])
+  if (request.method === 'DELETE' && userMatch) return deleteUserAccount(request, env, userMatch[1])
   const historyMatch = url.pathname.match(/^\/api\/admin\/history\/(communications|audit)\/([^/]+)$/)
   if (historyMatch && request.method === 'DELETE') return deleteHistoryRecord(request, env, historyMatch[1], historyMatch[2])
   return json({ error: 'Not found' }, { status: 404 })
