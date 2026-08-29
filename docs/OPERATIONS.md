@@ -15,6 +15,8 @@
 
 Do not put API tokens, OAuth secrets, Stripe keys, email credentials, or recovery codes in this repository.
 
+See [`ROLES_AND_NOTIFICATIONS.md`](ROLES_AND_NOTIFICATIONS.md) for the current email-routing and administration-permission matrix.
+
 ## Deployment ownership and verification
 
 Cloudflare Workers Builds is expected to deploy every push to `main`. Manual deployments use the same Worker configuration through `npm run cf:deploy`.

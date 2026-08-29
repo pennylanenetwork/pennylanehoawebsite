@@ -45,3 +45,5 @@ The initial migration creates HOA phases and 101 active properties. Property wri
 ## Operations
 
 Production deployment ownership, D1 backup and restore procedures, emergency administrative recovery, and monitoring are documented in [`docs/OPERATIONS.md`](docs/OPERATIONS.md).
+
+Email recipients, committee message routing, reservation notifications, and administration permissions are documented in [`docs/ROLES_AND_NOTIFICATIONS.md`](docs/ROLES_AND_NOTIFICATIONS.md).
