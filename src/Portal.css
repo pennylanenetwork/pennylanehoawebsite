@@ -24,7 +24,9 @@
 .primary-button:disabled { cursor: wait; opacity: .6; }
 .turnstile-slot { min-height: 65px; overflow: hidden; }
 .secondary-button { background: transparent; border: 1px solid #aeb7ae; color: #294b3c; }
-.oauth-button { align-items: center; background: #fff; border: 1px solid #aeb7ae; color: #26352f; display: flex; font-size: 12px; font-weight: 700; justify-content: center; min-height: 44px; }.oauth-button + .oauth-button { margin-top: 9px; }
+.oauth-button { align-items: center; background: #fff; border: 1px solid #aeb7ae; color: #26352f; display: flex; font-size: 12px; font-weight: 700; gap: 10px; justify-content: center; min-height: 44px; }.oauth-button + .oauth-button { margin-top: 9px; }
+.oauth-logo { display: block; flex: 0 0 18px; height: 18px; object-fit: contain; width: 18px; }
+.oauth-logo-yahoo { color: #6001d2; font-family: Arial, sans-serif; font-size: 15px; font-weight: 800; line-height: 18px; }
 .auth-divider { align-items: center; color: #858d87; display: flex; font-size: 10px; gap: 12px; text-transform: uppercase; }
 .auth-divider::before, .auth-divider::after { background: #d2d6cf; content: ''; flex: 1; height: 1px; }
 .form-error, .form-notice { font-size: 12px; line-height: 1.5; margin: 0 0 20px; padding: 12px; }

@@ -1232,10 +1232,12 @@ export default function Portal() {
               {loginStage === 'request' && (
                 <>
                   <a className="oauth-button" href="/api/auth/google/start">
-                    Continue with Google
+                    <img className="oauth-logo" src="/google-g.svg" alt="" aria-hidden="true" />
+                    <span>Continue with Google</span>
                   </a>
                   <a className="oauth-button" href="/api/auth/yahoo/start">
-                    Continue with Yahoo
+                    <span className="oauth-logo oauth-logo-yahoo" aria-hidden="true">Y!</span>
+                    <span>Continue with Yahoo</span>
                   </a>
                   <div className="auth-divider">
                     <span>or use email</span>
