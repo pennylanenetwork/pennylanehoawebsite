@@ -1135,8 +1135,8 @@ async function deleteGuestRegistration(request, env, id) {
   const archived = guest.status === 'revoked' || (guest.status === 'active' && guest.endsOn < new Date().toISOString().slice(0, 10))
   if (!archived) throw new ResponseError('Active guest registrations must be revoked before deletion.', 409)
   await env.DB.batch([
-    env.DB.prepare(`DELETE FROM audit_log WHERE target_type = 'property' AND details_json LIKE ?1`)
-      .bind(`%"guestRegistrationId":"${id}"%`),
+    env.DB.prepare(`DELETE FROM audit_log WHERE target_type = 'property'
+      AND json_extract(details_json, '$.guestRegistrationId') = ?1`).bind(id),
     env.DB.prepare('DELETE FROM guest_registrations WHERE id = ?1').bind(id),
     env.DB.prepare(`INSERT INTO audit_log (actor_user_id, action, target_type, target_id, details_json)
       VALUES (?1, 'guest.deleted', 'property', ?2, ?3)`).bind(admin.id, String(guest.propertyId),
