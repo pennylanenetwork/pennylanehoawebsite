@@ -618,6 +618,15 @@ function validDateRange(startsAtValue, endsAtValue, requireFuture = false) {
   return { startsAt: starts.toISOString(), endsAt: ends.toISOString() }
 }
 
+function validBlackoutRange(startsAtValue, endsAtValue) {
+  const starts = new Date(startsAtValue)
+  const ends = new Date(endsAtValue)
+  if (!Number.isFinite(starts.getTime()) || !Number.isFinite(ends.getTime()) || ends <= starts) {
+    throw new ResponseError('Enter a valid start and end time.', 400)
+  }
+  return { startsAt: starts.toISOString(), endsAt: ends.toISOString() }
+}
+
 async function clubhouseSettings(env) {
   return env.DB.prepare(`SELECT opens_at AS opensAt, closes_at AS closesAt,
     cleanup_buffer_minutes AS cleanupBufferMinutes, advance_days AS advanceDays,
@@ -645,6 +654,26 @@ function lindaleLocalToIso(date, minutes) {
     guess += target - represented
   }
   return new Date(guess).toISOString()
+}
+
+export function allDayBlackoutRange(startsOn, endsOn) {
+  const datePattern = /^\d{4}-\d{2}-\d{2}$/
+  if (!datePattern.test(String(startsOn)) || !datePattern.test(String(endsOn))) {
+    throw new ResponseError('Select valid blackout dates.', 400)
+  }
+  const validate = (value) => {
+    const [year, month, day] = value.split('-').map(Number)
+    const date = new Date(Date.UTC(year, month - 1, day))
+    if (date.getUTCFullYear() !== year || date.getUTCMonth() !== month - 1 || date.getUTCDate() !== day) {
+      throw new ResponseError('Select valid blackout dates.', 400)
+    }
+    return date
+  }
+  const starts = validate(startsOn)
+  const ends = validate(endsOn)
+  if (ends < starts) throw new ResponseError('The last blackout date cannot be before the first date.', 400)
+  ends.setUTCDate(ends.getUTCDate() + 1)
+  return { startsAt: lindaleLocalToIso(startsOn, 0), endsAt: lindaleLocalToIso(ends.toISOString().slice(0, 10), 0) }
 }
 
 export function reservationSlotRange(date, slot, settings) {
@@ -702,7 +731,15 @@ async function portalDashboard(request, env) {
       CASE WHEN event_type = 'clubhouse' THEN 'Clubhouse Reserved' ELSE title END AS title,
       CASE WHEN event_type = 'clubhouse' THEN 'The clubhouse is reserved during this period.' ELSE description END AS description,
       starts_at AS startsAt, ends_at AS endsAt,
-      audience, event_type AS eventType FROM events WHERE status = 'scheduled' AND ends_at >= CURRENT_TIMESTAMP ORDER BY starts_at LIMIT 50`),
+      audience, event_type AS eventType, 0 AS allDay FROM events
+      WHERE status = 'scheduled' AND ends_at >= CURRENT_TIMESTAMP
+      UNION ALL
+      SELECT 'blackout-' || id AS id, title,
+        COALESCE(notes, 'The clubhouse is unavailable during this period.') AS description,
+        starts_at AS startsAt, ends_at AS endsAt, 'members' AS audience,
+        'blackout' AS eventType, all_day AS allDay
+      FROM clubhouse_blackouts WHERE ends_at >= CURRENT_TIMESTAMP
+      ORDER BY startsAt LIMIT 100`),
     env.DB.prepare(`SELECT id, title, description, document_url AS url, category, audience
       FROM documents ORDER BY category, title`),
     env.DB.prepare(`SELECT id, event_name AS eventName, event_type AS eventType, starts_at AS startsAt, ends_at AS endsAt,
@@ -867,7 +904,7 @@ async function adminDashboard(request, env) {
     env.DB.prepare(`SELECT opens_at AS opensAt, closes_at AS closesAt,
       cleanup_buffer_minutes AS cleanupBufferMinutes, advance_days AS advanceDays,
       max_active_per_household AS maxActivePerHousehold FROM clubhouse_settings WHERE id = 1`),
-    env.DB.prepare(`SELECT id, title, starts_at AS startsAt, ends_at AS endsAt, notes,
+    env.DB.prepare(`SELECT id, title, starts_at AS startsAt, ends_at AS endsAt, notes, all_day AS allDay,
       created_at AS createdAt FROM clubhouse_blackouts ORDER BY starts_at DESC LIMIT 200`),
     env.DB.prepare(`SELECT id, title, description, url, sort_order AS sortOrder, status,
       created_at AS createdAt, updated_at AS updatedAt FROM quick_links ORDER BY sort_order, created_at`),
@@ -1395,7 +1432,8 @@ async function deleteQuickLink(request, env, id) {
 async function createEvent(request, env) {
   const admin = await requireAdmin(request, env)
   const body = await readJson(request)
-  const range = validDateRange(body.startsAt, body.endsAt)
+  const allDay = Boolean(body.allDay)
+  const range = allDay ? allDayBlackoutRange(body.startsAt, body.endsAt) : validBlackoutRange(body.startsAt, body.endsAt)
   const audience = ['public', 'members'].includes(body.audience) ? body.audience : 'members'
   const eventType = ['community', 'meeting'].includes(body.eventType) ? body.eventType : 'community'
   const id = crypto.randomUUID()
@@ -1701,11 +1739,11 @@ async function createClubhouseBlackout(request, env) {
   const title = cleanText(body.title, 140, true)
   const notes = cleanText(body.notes, 1000)
   await env.DB.batch([
-    env.DB.prepare(`INSERT INTO clubhouse_blackouts (id, title, starts_at, ends_at, notes, created_by)
-      VALUES (?1, ?2, ?3, ?4, ?5, ?6)`).bind(id, title, range.startsAt, range.endsAt, notes, admin.id),
+    env.DB.prepare(`INSERT INTO clubhouse_blackouts (id, title, starts_at, ends_at, notes, created_by, all_day)
+      VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)`).bind(id, title, range.startsAt, range.endsAt, notes, admin.id, allDay ? 1 : 0),
     env.DB.prepare(`INSERT INTO audit_log (actor_user_id, action, target_type, target_id, details_json)
       VALUES (?1, 'clubhouse.blackout_created', 'clubhouse_blackout', ?2, ?3)`).bind(admin.id, id,
-      JSON.stringify({ title, startsAt: range.startsAt, endsAt: range.endsAt })),
+      JSON.stringify({ title, startsAt: range.startsAt, endsAt: range.endsAt, allDay })),
   ])
   return json({ id }, { status: 201 })
 }

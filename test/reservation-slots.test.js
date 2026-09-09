@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict'
 import test from 'node:test'
-import { reservationSlotRange } from '../worker/index.js'
+import { allDayBlackoutRange, reservationSlotRange } from '../worker/index.js'
 
 const settings = { opensAt: '08:00', closesAt: '23:00', cleanupBufferMinutes: 60 }
 
@@ -16,5 +16,16 @@ test('whole-day slots follow daylight-saving time in Lindale', () => {
   assert.deepEqual(reservationSlotRange('2030-07-15', 'whole_day', settings), {
     startsAt: '2030-07-15T13:00:00.000Z',
     endsAt: '2030-07-16T04:00:00.000Z',
+  })
+})
+
+test('all-day blackouts include the selected final date in Lindale', () => {
+  assert.deepEqual(allDayBlackoutRange('2030-07-15', '2030-07-15'), {
+    startsAt: '2030-07-15T05:00:00.000Z',
+    endsAt: '2030-07-16T05:00:00.000Z',
+  })
+  assert.deepEqual(allDayBlackoutRange('2030-01-15', '2030-01-17'), {
+    startsAt: '2030-01-15T06:00:00.000Z',
+    endsAt: '2030-01-18T06:00:00.000Z',
   })
 })

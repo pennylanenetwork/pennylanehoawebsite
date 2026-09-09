@@ -978,9 +978,10 @@ function CalendarView({ events }) {
     date.setDate(gridStart.getDate() + index)
     return date
   })
-  const sameDay = (value, date) => {
-    const eventDate = new Date(value)
-    return eventDate.getFullYear() === date.getFullYear() && eventDate.getMonth() === date.getMonth() && eventDate.getDate() === date.getDate()
+  const occursOnDay = (item, date) => {
+    const dayStart = new Date(date.getFullYear(), date.getMonth(), date.getDate())
+    const dayEnd = new Date(date.getFullYear(), date.getMonth(), date.getDate() + 1)
+    return new Date(item.startsAt) < dayEnd && new Date(item.endsAt) > dayStart
   }
 
   return (
@@ -1015,11 +1016,13 @@ function CalendarView({ events }) {
           </div>
           <div className="month-grid">
             {days.map((day) => {
-              const dayEvents = events.filter((item) => sameDay(item.startsAt, day))
+              const dayEvents = events.filter((item) => occursOnDay(item, day))
               return (
                 <div className={`month-day ${day.getMonth() !== month.getMonth() ? 'outside' : ''}`} key={day.toISOString()}>
                   <time>{day.getDate()}</time>
-                  {dayEvents.slice(0, 3).map((item) => (
+                  {dayEvents.slice(0, 3).map((item) => item.eventType === 'blackout' ? (
+                    <span className="calendar-chip type-blackout" key={item.id} title={item.title}>{item.title}{item.allDay ? ' - All day' : ` ${compactTime(item.startsAt)}-${compactTime(item.endsAt)}`}</span>
+                  ) : (
                     <a href={`/api/events/${item.id}.ics`} className={`calendar-chip type-${item.eventType}`} key={item.id} title={`${item.title} - download calendar file`}>
                       {item.eventType === 'clubhouse' ? `Reserved ${compactTime(item.startsAt)}-${compactTime(item.endsAt)}` : item.title}
                     </a>
@@ -1034,15 +1037,13 @@ function CalendarView({ events }) {
         <div className="data-list">
           {events.map((item) => (
             <div className="calendar-row" key={item.id}>
-              <time>{dateTime(item.startsAt)}</time>
+              <time>{item.allDay ? `${new Intl.DateTimeFormat('en-US', { dateStyle: 'medium', timeZone: 'America/Chicago' }).format(new Date(item.startsAt))} - All day` : dateTime(item.startsAt)}</time>
               <div>
                 <strong>{item.title}</strong>
                 <p>{item.description}</p>
               </div>
               <span>{item.eventType}</span>
-              <a className="calendar-download" href={`/api/events/${item.id}.ics`} title="Add to calendar">
-                Add
-              </a>
+              {item.eventType !== 'blackout' && <a className="calendar-download" href={`/api/events/${item.id}.ics`} title="Add to calendar">Add</a>}
             </div>
           ))}
           {events.length === 0 && <p className="empty-state">No upcoming events.</p>}

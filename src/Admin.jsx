@@ -48,6 +48,10 @@ function dateTime(value) {
   }).format(new Date(value))
 }
 
+function calendarDate(value) {
+  return new Intl.DateTimeFormat('en-US', { dateStyle: 'medium', timeZone: 'America/Chicago' }).format(new Date(value))
+}
+
 function localDateTime(value) {
   const date = new Date(value)
   const offset = date.getTimezoneOffset() * 60000
@@ -303,7 +307,7 @@ export default function Admin() {
     try {
       await api('/api/admin/clubhouse/blackouts', {
         method: 'POST',
-        body: JSON.stringify({
+        body: JSON.stringify(blackout.allDay ? blackout : {
           ...blackout,
           startsAt: new Date(blackout.startsAt).toISOString(),
           endsAt: new Date(blackout.endsAt).toISOString(),
@@ -863,7 +867,7 @@ function ClubhouseControls({ settings, blackouts, onSave, onAddBlackout, onDelet
       maxActivePerHousehold: 2,
     },
   )
-  const emptyBlackout = { title: '', startsAt: '', endsAt: '', notes: '' }
+  const emptyBlackout = { title: '', startsAt: '', endsAt: '', notes: '', allDay: true }
   const [blackout, setBlackout] = useState(emptyBlackout)
   return (
     <section className="clubhouse-controls">
@@ -918,14 +922,18 @@ function ClubhouseControls({ settings, blackouts, onSave, onAddBlackout, onDelet
             Title
             <input required maxLength="140" value={blackout.title} onChange={(event) => setBlackout({ ...blackout, title: event.target.value })} />
           </label>
+          <label className="rules-check">
+            <input type="checkbox" checked={blackout.allDay} onChange={(event) => setBlackout({ ...blackout, allDay: event.target.checked, startsAt: '', endsAt: '' })} />
+            <span><strong>All day</strong><small>Block the selected date or date range without setting times.</small></span>
+          </label>
           <div className="field-row">
             <label>
-              Starts
-              <input required type="datetime-local" value={blackout.startsAt} onChange={(event) => setBlackout({ ...blackout, startsAt: event.target.value })} />
+              {blackout.allDay ? 'First date' : 'Starts'}
+              <input required type={blackout.allDay ? 'date' : 'datetime-local'} value={blackout.startsAt} onChange={(event) => setBlackout({ ...blackout, startsAt: event.target.value })} />
             </label>
             <label>
-              Ends
-              <input required type="datetime-local" value={blackout.endsAt} onChange={(event) => setBlackout({ ...blackout, endsAt: event.target.value })} />
+              {blackout.allDay ? 'Last date' : 'Ends'}
+              <input required type={blackout.allDay ? 'date' : 'datetime-local'} min={blackout.allDay ? blackout.startsAt : undefined} value={blackout.endsAt} onChange={(event) => setBlackout({ ...blackout, endsAt: event.target.value })} />
             </label>
           </div>
           <label>
@@ -940,7 +948,7 @@ function ClubhouseControls({ settings, blackouts, onSave, onAddBlackout, onDelet
               <div>
                 <strong>{item.title}</strong>
                 <small>
-                  {dateTime(item.startsAt)} to {dateTime(item.endsAt)}
+                  {item.allDay ? `${calendarDate(item.startsAt)}${calendarDate(new Date(new Date(item.endsAt).getTime() - 1)) !== calendarDate(item.startsAt) ? ` through ${calendarDate(new Date(new Date(item.endsAt).getTime() - 1))}` : ''} - All day` : `${dateTime(item.startsAt)} to ${dateTime(item.endsAt)}`}
                 </small>
               </div>
               <button type="button" className="row-delete" onClick={() => onDeleteBlackout(item.id)}>
