@@ -1974,8 +1974,11 @@ async function updateDocument(request, env, id) {
   await requireAdmin(request, env)
   const body = await readJson(request)
   const audience = ['public', 'members'].includes(body.audience) ? body.audience : 'members'
-  const url = cleanText(body.url, 1000, true)
-  if (!/^https:\/\//i.test(url)) throw new ResponseError('Document links must use HTTPS.', 400)
+  const existing = await env.DB.prepare(`SELECT document_url AS documentUrl, storage_key AS storageKey
+    FROM documents WHERE id = ?1`).bind(id).first()
+  if (!existing) throw new ResponseError('Document not found.', 404)
+  const url = existing.storageKey ? existing.documentUrl : cleanText(body.url, 1000, true)
+  if (!existing.storageKey && !/^https:\/\//i.test(url)) throw new ResponseError('Document links must use HTTPS.', 400)
   const result = await env.DB.prepare(`UPDATE documents SET title = ?1, description = ?2, document_url = ?3,
     category = ?4, audience = ?5, updated_at = CURRENT_TIMESTAMP WHERE id = ?6`)
     .bind(cleanText(body.title, 140, true), cleanText(body.description, 1000), url,

@@ -200,13 +200,24 @@ export default function Admin() {
     setError('')
     setNotice('')
     try {
+      const isEditing = editing?.kind === 'document'
+      if (isEditing && !documentFile) {
+        await api(`/api/admin/documents/${editing.id}`, {
+          method: 'PATCH',
+          body: JSON.stringify(forms.document),
+        })
+        setForms({ ...forms, document: emptyForms.document })
+        setEditing(null)
+        setNotice('Document details updated successfully.')
+        await load()
+        return
+      }
       if (!documentFile) throw new Error('Choose a document to upload.')
       const form = new FormData()
       for (const [key, value] of Object.entries(forms.document)) {
         if (key !== 'url') form.append(key, value)
       }
       form.append('file', documentFile)
-      const isEditing = editing?.kind === 'document'
       await api(`/api/admin/documents${isEditing ? `/${editing.id}` : ''}/upload`, {
         method: isEditing ? 'PUT' : 'POST',
         body: form,
@@ -727,9 +738,9 @@ export default function Admin() {
                 </label>
                 {documentMode === 'upload' ? (
                   <label>
-                    {editing?.kind === 'document' ? 'Replacement file' : 'File'}
-                    <input required type="file" accept=".pdf,.doc,.docx,.xls,.xlsx,.jpg,.jpeg,.png" onChange={(event) => setDocumentFile(event.target.files[0] || null)} />
-                    <span>PDF, Word, Excel, JPEG, or PNG. Maximum 15 MB.</span>
+                    {editing?.kind === 'document' ? 'Replacement file (optional)' : 'File'}
+                    <input required={editing?.kind !== 'document'} type="file" accept=".pdf,.doc,.docx,.xls,.xlsx,.jpg,.jpeg,.png" onChange={(event) => setDocumentFile(event.target.files[0] || null)} />
+                    <span>{editing?.kind === 'document' ? 'Leave blank to keep the current file. ' : ''}PDF, Word, Excel, JPEG, or PNG. Maximum 15 MB.</span>
                   </label>
                 ) : (
                   <label>
@@ -742,7 +753,7 @@ export default function Admin() {
                   <input required value={forms.document.category} onChange={(event) => updateForm('document', 'category', event.target.value)} />
                 </label>
                 <Audience value={forms.document.audience} onChange={(value) => updateForm('document', 'audience', value)} />
-                <FormActions editing={editing?.kind === 'document'} label={documentMode === 'upload' ? 'Upload document' : 'Add document'} onCancel={() => stopEditing('document')} />
+                <FormActions editing={editing?.kind === 'document'} label={editing?.kind === 'document' ? 'Save changes' : documentMode === 'upload' ? 'Upload document' : 'Add document'} onCancel={() => stopEditing('document')} />
               </form>
             }
             rows={data.documents.map((item) => (
