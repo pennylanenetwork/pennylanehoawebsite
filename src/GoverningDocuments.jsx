@@ -10,7 +10,13 @@ export default function GoverningDocuments() {
   useEffect(() => {
     fetch('/api/auth/session')
       .then((response) => response.json())
-      .then(({ user }) => fetch(user ? '/api/portal/governing-documents' : '/api/public/governing-documents'))
+      .then(({ user }) => {
+        if (!user) {
+          window.location.replace('/portal')
+          return new Promise(() => {})
+        }
+        return fetch('/api/portal/governing-documents')
+      })
       .then((response) => response.ok ? response.json() : Promise.reject(new Error('Unable to load governing documents.')))
       .then((result) => {
         const items = result.documents || []
@@ -39,7 +45,7 @@ export default function GoverningDocuments() {
   return <main className="governing-page" id="top">
     <nav className="topbar" aria-label="Governing documents navigation">
       <a className="public-logo" href="/" aria-label="Penny Lane HOA home"><img src="/penny-lane-logo.png" alt="Penny Lane" /></a>
-      <div className="nav-links"><a href="/">Home</a><a href="/governing-documents">Governing documents</a></div>
+      <div className="nav-links"><a href="/portal">Resident overview</a><a href="/governing-documents">Governing documents</a></div>
       <a className="nav-button" href="/portal">Resident portal <span aria-hidden="true">&#8599;</span></a>
     </nav>
     <header className="governing-hero">
@@ -85,6 +91,6 @@ export default function GoverningDocuments() {
         </article>
       </div>
     </>}
-    <footer className="governing-footer"><a href="/">Penny Lane Estates HOA</a><span>Lindale, Texas</span></footer>
+    <footer className="governing-footer"><a href="/portal">Resident portal</a><span>Penny Lane Estates HOA</span></footer>
   </main>
 }

@@ -2636,7 +2636,6 @@ async function handleApi(request, env) {
   }
   if (request.method === 'GET' && url.pathname === '/api/public/content') return publicContent(env)
   if (request.method === 'GET' && url.pathname === '/api/public/gallery') return publicGallery(env)
-  if (request.method === 'GET' && url.pathname === '/api/public/governing-documents') return governingDocuments(request, env)
   const galleryImageMatch = url.pathname.match(/^\/api\/gallery\/([^/]+)$/)
   if (galleryImageMatch && request.method === 'GET') return galleryImage(env, galleryImageMatch[1])
   const calendarDownloadMatch = url.pathname.match(/^\/api\/events\/([^/]+)\.ics$/)
