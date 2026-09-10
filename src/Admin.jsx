@@ -985,8 +985,18 @@ function GoverningDocumentsManager({ documents, sourceDocuments, onChanged }) {
     setError('')
     setNotice('')
     try {
+      const payload = {
+        title: documentForm.title,
+        documentType: documentForm.documentType,
+        summary: documentForm.summary,
+        status: documentForm.status,
+        effectiveDate: documentForm.effectiveDate,
+        recordingInfo: documentForm.recordingInfo,
+        sourceDocumentId: documentForm.sourceDocumentId,
+        sortOrder: Number(documentForm.sortOrder),
+      }
       await api(`/api/admin/governing-documents${editingDocumentId ? `/${editingDocumentId}` : ''}`, {
-        method: editingDocumentId ? 'PATCH' : 'POST', body: JSON.stringify({ ...documentForm, sortOrder: Number(documentForm.sortOrder) }),
+        method: editingDocumentId ? 'PATCH' : 'POST', body: JSON.stringify(payload),
       })
       setDocumentForm(emptyDocument)
       setEditingDocumentId(null)
@@ -1023,7 +1033,17 @@ function GoverningDocumentsManager({ documents, sourceDocuments, onChanged }) {
   }
 
   function editDocument(item) {
-    setDocumentForm({ ...emptyDocument, ...item, effectiveDate: item.effectiveDate || '', sourceDocumentId: item.sourceDocumentId || '' })
+    setDocumentForm({
+      title: item.title,
+      documentType: item.documentType,
+      summary: item.summary || '',
+      audience: 'members',
+      status: item.status,
+      effectiveDate: item.effectiveDate || '',
+      recordingInfo: item.recordingInfo || '',
+      sourceDocumentId: item.sourceDocumentId || '',
+      sortOrder: item.sortOrder,
+    })
     setEditingDocumentId(item.id)
     window.scrollTo({ top: 0, behavior: 'smooth' })
   }
@@ -1034,7 +1054,7 @@ function GoverningDocumentsManager({ documents, sourceDocuments, onChanged }) {
   }
 
   return <section className="governing-admin">
-    <header className="dashboard-heading"><div><p className="portal-kicker">Website management</p><h1>Governing documents</h1><p>Create a navigable reference copy and link it to the authoritative uploaded file.</p></div><a className="secondary-button" href="/governing-documents" target="_blank" rel="noreferrer">View public page</a></header>
+    <header className="dashboard-heading"><div><p className="portal-kicker">Website management</p><h1>Governing documents</h1><p>Create a navigable reference copy and link it to the authoritative uploaded file.</p></div><a className="secondary-button" href="/governing-documents" target="_blank" rel="noreferrer">Preview resident page</a></header>
     {notice && <p className="form-notice" role="status">{notice}</p>}
     {error && <p className="form-error" role="alert">{error}</p>}
     <div className="governing-admin-layout">
@@ -1052,10 +1072,7 @@ function GoverningDocumentsManager({ documents, sourceDocuments, onChanged }) {
             <label>Recording information<input maxLength="500" value={documentForm.recordingInfo || ''} onChange={(event) => setDocumentForm({ ...documentForm, recordingInfo: event.target.value })} /></label>
           </div>
           <label>Authoritative file<select value={documentForm.sourceDocumentId || ''} onChange={(event) => setDocumentForm({ ...documentForm, sourceDocumentId: event.target.value })}><option value="">No file selected</option>{sourceDocuments.map((item) => <option value={item.id} key={item.id}>{item.title}</option>)}</select><span>Upload the original under Documents first, then select it here.</span></label>
-          <div className="field-row">
-            <label>Audience<select value={documentForm.audience} onChange={(event) => setDocumentForm({ ...documentForm, audience: event.target.value })}><option value="public">Public</option><option value="members">Members only</option></select></label>
-            <label>Status<select value={documentForm.status} onChange={(event) => setDocumentForm({ ...documentForm, status: event.target.value })}><option value="draft">Draft</option><option value="published">Published</option><option value="archived">Archived</option></select></label>
-          </div>
+          <label>Status<select value={documentForm.status} onChange={(event) => setDocumentForm({ ...documentForm, status: event.target.value })}><option value="draft">Draft</option><option value="published">Published</option><option value="archived">Archived</option></select><span>Published documents are visible only to signed-in residents.</span></label>
           <FormActions editing={Boolean(editingDocumentId)} label="Save document" onCancel={() => { setDocumentForm(emptyDocument); setEditingDocumentId(null) }} />
         </form>
       </section>

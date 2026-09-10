@@ -875,7 +875,7 @@ async function governingDocuments(request, env, adminView = false, memberView = 
 }
 
 function governingDocumentInput(body) {
-  const audience = ['public', 'members'].includes(body.audience) ? body.audience : 'public'
+  const audience = 'members'
   const status = ['draft', 'published', 'archived'].includes(body.status) ? body.status : 'draft'
   const sortOrder = Number(body.sortOrder)
   const effectiveDate = cleanText(body.effectiveDate, 10)
