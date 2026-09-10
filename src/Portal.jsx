@@ -441,6 +441,13 @@ function ResidentHome({ user, onLogout }) {
         {tab === 'calendar' && <CalendarView events={data.events} />}
         {tab === 'documents' && (
           <section className="document-list">
+            <a href="/governing-documents">
+              <div>
+                <strong>Browse governing documents</strong>
+                <small>Search and navigate published bylaws, covenants, rules, and amendments.</small>
+              </div>
+              <span>Indexed reference</span>
+            </a>
             {data.documents.map((item) => (
               <a href={item.url} target="_blank" rel="noreferrer" key={item.id}>
                 <div>

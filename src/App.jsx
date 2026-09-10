@@ -4,6 +4,7 @@ import Admin from './Admin.jsx'
 import Portal, { TurnstileWidget } from './Portal.jsx'
 import { api } from './api.js'
 import { SiteErrorPage } from './ErrorPage.jsx'
+import GoverningDocuments from './GoverningDocuments.jsx'
 
 function PublicUpdates() {
   const [content, setContent] = useState(null)
@@ -101,9 +102,10 @@ function App() {
   const path = window.location.pathname.replace(/\/+$/, '') || '/'
   if (path === '/admin' || path.startsWith('/admin/')) return <Admin />
   if (path === '/portal' || path.startsWith('/portal/')) return <Portal />
+  if (path === '/governing-documents') return <GoverningDocuments />
   if (path !== '/') return <SiteErrorPage />
   return <main>
-    <nav className="topbar" aria-label="Main navigation"><a className="public-logo" href="#top" aria-label="Penny Lane HOA home"><img src="/penny-lane-logo.png" alt="Penny Lane" /></a><div className="nav-links"><a href="#updates">Community</a><a href="#quick-links">Quick links</a><a href="#contact">Contact</a></div><a className="nav-button" href="/portal">Resident portal <span aria-hidden="true">&#8599;</span></a></nav>
+    <nav className="topbar" aria-label="Main navigation"><a className="public-logo" href="#top" aria-label="Penny Lane HOA home"><img src="/penny-lane-logo.png" alt="Penny Lane" /></a><div className="nav-links"><a href="#updates">Community</a><a href="/governing-documents">Governing documents</a><a href="#quick-links">Quick links</a><a href="#contact">Contact</a></div><a className="nav-button" href="/portal">Resident portal <span aria-hidden="true">&#8599;</span></a></nav>
     <section className="hero" id="top"><div className="hero-copy"><p className="eyebrow">Penny Lane Estates Homeowners Association <span></span> Lindale, Texas</p><h1>A good place<br /><i>to come home to.</i></h1><p className="hero-intro">A connected, cared-for community in Lindale, Texas. Find neighborhood news, helpful forms, and the people who keep Penny Lane moving.</p><div className="hero-actions"><a className="button button-dark" href="#updates">See what&apos;s happening <span aria-hidden="true">&#8595;</span></a><a className="text-link" href="#contact">Get in touch <span aria-hidden="true">&#8594;</span></a></div></div><div className="hero-image" role="img" aria-label="Aerial view of the Penny Lane Estates clubhouse and pool at sunset" /><div className="hero-stamp">Neighbors<br /><strong>since</strong><br />2003</div></section>
     <section className="intro-band"><p className="section-label">The neighborhood brief</p><p className="intro-copy">Penny Lane is more than a street address. It&apos;s Saturday walks, porch hellos, and a shared commitment to making this place feel like home.</p><span className="scroll-cue" aria-hidden="true">&#8595;</span></section>
     <PublicUpdates />

@@ -607,6 +607,36 @@ function cleanText(value, maximum, required = false) {
   return result || null
 }
 
+function urlSlug(value, fallback = 'document') {
+  const slug = String(value || '').trim().toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-|-$/g, '').slice(0, 100)
+  return slug || fallback
+}
+
+async function uniqueGoverningSlug(env, title, excludeId = null) {
+  const base = urlSlug(title)
+  let candidate = base
+  for (let suffix = 2; suffix < 1000; suffix += 1) {
+    const existing = await env.DB.prepare('SELECT id FROM governing_documents WHERE slug = ?1 AND (?2 IS NULL OR id != ?2)')
+      .bind(candidate, excludeId).first()
+    if (!existing) return candidate
+    candidate = `${base}-${suffix}`
+  }
+  throw new ResponseError('Unable to create a unique document address.', 409)
+}
+
+async function uniqueSectionSlug(env, documentId, title, excludeId = null) {
+  const base = urlSlug(title, 'section')
+  let candidate = base
+  for (let suffix = 2; suffix < 1000; suffix += 1) {
+    const existing = await env.DB.prepare(`SELECT id FROM governing_sections
+      WHERE governing_document_id = ?1 AND slug = ?2 AND (?3 IS NULL OR id != ?3)`)
+      .bind(documentId, candidate, excludeId).first()
+    if (!existing) return candidate
+    candidate = `${base}-${suffix}`
+  }
+  throw new ResponseError('Unable to create a unique section address.', 409)
+}
+
 function validDateRange(startsAtValue, endsAtValue, requireFuture = false) {
   const starts = new Date(startsAtValue)
   const ends = new Date(endsAtValue)
@@ -806,6 +836,142 @@ async function portalDashboard(request, env) {
     boardMembers: boardMembers.results,
     clubhouse: clubhouse.results[0],
   })
+}
+
+function groupGoverningDocuments(documents, sections) {
+  const byDocument = sections.reduce((result, section) => {
+    if (!result[section.documentId]) result[section.documentId] = []
+    result[section.documentId].push(section)
+    return result
+  }, {})
+  return documents.map((document) => ({ ...document, sections: byDocument[document.id] || [] }))
+}
+
+async function governingDocuments(request, env, adminView = false, memberView = false) {
+  if (adminView) await requireAdmin(request, env)
+  if (memberView) await requireUser(request, env)
+  const visibility = adminView ? '' : memberView
+    ? "WHERE governing_documents.status = 'published' AND governing_documents.audience IN ('public', 'members')"
+    : "WHERE governing_documents.status = 'published' AND governing_documents.audience = 'public'"
+  const [documents, sections] = await env.DB.batch([
+    env.DB.prepare(`SELECT governing_documents.id, governing_documents.title, governing_documents.slug,
+      governing_documents.document_type AS documentType, governing_documents.summary,
+      governing_documents.audience, governing_documents.status, governing_documents.effective_date AS effectiveDate,
+      governing_documents.recording_info AS recordingInfo, governing_documents.source_document_id AS sourceDocumentId,
+      governing_documents.sort_order AS sortOrder, documents.document_url AS sourceUrl,
+      documents.title AS sourceTitle FROM governing_documents
+      LEFT JOIN documents ON documents.id = governing_documents.source_document_id
+      ${visibility} ORDER BY governing_documents.sort_order, governing_documents.title`),
+    env.DB.prepare(`SELECT governing_sections.id, governing_sections.governing_document_id AS documentId,
+      governing_sections.section_label AS sectionLabel, governing_sections.title, governing_sections.slug,
+      governing_sections.body, governing_sections.sort_order AS sortOrder
+      FROM governing_sections INNER JOIN governing_documents
+        ON governing_documents.id = governing_sections.governing_document_id
+      ${visibility} ORDER BY governing_sections.sort_order, governing_sections.title`),
+  ])
+  return json({ documents: groupGoverningDocuments(documents.results, sections.results) }, {
+    headers: { 'cache-control': adminView ? 'private, no-store' : 'public, max-age=60' },
+  })
+}
+
+function governingDocumentInput(body) {
+  const audience = ['public', 'members'].includes(body.audience) ? body.audience : 'public'
+  const status = ['draft', 'published', 'archived'].includes(body.status) ? body.status : 'draft'
+  const sortOrder = Number(body.sortOrder)
+  const effectiveDate = cleanText(body.effectiveDate, 10)
+  if (effectiveDate && !/^\d{4}-\d{2}-\d{2}$/.test(effectiveDate)) throw new ResponseError('Enter a valid effective date.', 400)
+  if (!Number.isInteger(sortOrder)) throw new ResponseError('Enter a valid display order.', 400)
+  return {
+    title: cleanText(body.title, 180, true), documentType: cleanText(body.documentType || 'Covenants', 80, true),
+    summary: cleanText(body.summary, 2000), audience, status, effectiveDate,
+    recordingInfo: cleanText(body.recordingInfo, 500), sourceDocumentId: cleanText(body.sourceDocumentId, 100), sortOrder,
+  }
+}
+
+async function createGoverningDocument(request, env) {
+  const admin = await requireAdmin(request, env)
+  const input = governingDocumentInput(await readJson(request))
+  const id = crypto.randomUUID()
+  const slug = await uniqueGoverningSlug(env, input.title)
+  await env.DB.batch([
+    env.DB.prepare(`INSERT INTO governing_documents (id, title, slug, document_type, summary, audience, status,
+      effective_date, recording_info, source_document_id, sort_order, created_by)
+      VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12)`)
+      .bind(id, input.title, slug, input.documentType, input.summary, input.audience, input.status,
+        input.effectiveDate, input.recordingInfo, input.sourceDocumentId, input.sortOrder, admin.id),
+    env.DB.prepare(`INSERT INTO audit_log (actor_user_id, action, target_type, target_id, details_json)
+      VALUES (?1, 'governing_document.created', 'governing_document', ?2, ?3)`)
+      .bind(admin.id, id, JSON.stringify({ title: input.title, status: input.status })),
+  ])
+  return json({ id, slug }, { status: 201 })
+}
+
+async function updateGoverningDocument(request, env, id) {
+  const admin = await requireAdmin(request, env)
+  const input = governingDocumentInput(await readJson(request))
+  const slug = await uniqueGoverningSlug(env, input.title, id)
+  const result = await env.DB.prepare(`UPDATE governing_documents SET title = ?1, slug = ?2, document_type = ?3,
+    summary = ?4, audience = ?5, status = ?6, effective_date = ?7, recording_info = ?8,
+    source_document_id = ?9, sort_order = ?10, updated_at = CURRENT_TIMESTAMP WHERE id = ?11`)
+    .bind(input.title, slug, input.documentType, input.summary, input.audience, input.status,
+      input.effectiveDate, input.recordingInfo, input.sourceDocumentId, input.sortOrder, id).run()
+  if (!result.meta.changes) throw new ResponseError('Governing document not found.', 404)
+  await env.DB.prepare(`INSERT INTO audit_log (actor_user_id, action, target_type, target_id, details_json)
+    VALUES (?1, 'governing_document.updated', 'governing_document', ?2, ?3)`)
+    .bind(admin.id, id, JSON.stringify({ title: input.title, status: input.status })).run()
+  return json({ status: 'updated', slug })
+}
+
+async function deleteGoverningDocument(request, env, id) {
+  const admin = await requireAdmin(request, env)
+  const existing = await env.DB.prepare('SELECT title FROM governing_documents WHERE id = ?1').bind(id).first()
+  if (!existing) throw new ResponseError('Governing document not found.', 404)
+  await env.DB.batch([
+    env.DB.prepare('DELETE FROM governing_documents WHERE id = ?1').bind(id),
+    env.DB.prepare(`INSERT INTO audit_log (actor_user_id, action, target_type, target_id, details_json)
+      VALUES (?1, 'governing_document.deleted', 'governing_document', ?2, ?3)`)
+      .bind(admin.id, id, JSON.stringify({ title: existing.title })),
+  ])
+  return json({ status: 'deleted' })
+}
+
+function governingSectionInput(body) {
+  const sortOrder = Number(body.sortOrder)
+  if (!Number.isInteger(sortOrder)) throw new ResponseError('Enter a valid section order.', 400)
+  return { documentId: cleanText(body.documentId, 100, true), sectionLabel: cleanText(body.sectionLabel, 80),
+    title: cleanText(body.title, 180, true), body: cleanText(body.body, 30000, true), sortOrder }
+}
+
+async function createGoverningSection(request, env) {
+  const admin = await requireAdmin(request, env)
+  const input = governingSectionInput(await readJson(request))
+  const document = await env.DB.prepare('SELECT id FROM governing_documents WHERE id = ?1').bind(input.documentId).first()
+  if (!document) throw new ResponseError('Governing document not found.', 404)
+  const id = crypto.randomUUID()
+  const slug = await uniqueSectionSlug(env, input.documentId, `${input.sectionLabel || ''} ${input.title}`)
+  await env.DB.prepare(`INSERT INTO governing_sections (id, governing_document_id, section_label, title, slug,
+    body, sort_order, created_by) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)`)
+    .bind(id, input.documentId, input.sectionLabel, input.title, slug, input.body, input.sortOrder, admin.id).run()
+  return json({ id, slug }, { status: 201 })
+}
+
+async function updateGoverningSection(request, env, id) {
+  await requireAdmin(request, env)
+  const input = governingSectionInput(await readJson(request))
+  const slug = await uniqueSectionSlug(env, input.documentId, `${input.sectionLabel || ''} ${input.title}`, id)
+  const result = await env.DB.prepare(`UPDATE governing_sections SET governing_document_id = ?1,
+    section_label = ?2, title = ?3, slug = ?4, body = ?5, sort_order = ?6,
+    updated_at = CURRENT_TIMESTAMP WHERE id = ?7`)
+    .bind(input.documentId, input.sectionLabel, input.title, slug, input.body, input.sortOrder, id).run()
+  if (!result.meta.changes) throw new ResponseError('Governing section not found.', 404)
+  return json({ status: 'updated', slug })
+}
+
+async function deleteGoverningSection(request, env, id) {
+  await requireAdmin(request, env)
+  const result = await env.DB.prepare('DELETE FROM governing_sections WHERE id = ?1').bind(id).run()
+  if (!result.meta.changes) throw new ResponseError('Governing section not found.', 404)
+  return json({ status: 'deleted' })
 }
 
 async function publicContent(env) {
@@ -2333,6 +2499,8 @@ async function deleteUserAccount(request, env, targetId) {
     env.DB.prepare('UPDATE documents SET created_by = ?1 WHERE created_by = ?2').bind(admin.id, targetId),
     env.DB.prepare('UPDATE gallery_photos SET uploaded_by = ?1 WHERE uploaded_by = ?2').bind(admin.id, targetId),
     env.DB.prepare('UPDATE clubhouse_blackouts SET created_by = ?1 WHERE created_by = ?2').bind(admin.id, targetId),
+    env.DB.prepare('UPDATE governing_documents SET created_by = ?1 WHERE created_by = ?2').bind(admin.id, targetId),
+    env.DB.prepare('UPDATE governing_sections SET created_by = ?1 WHERE created_by = ?2').bind(admin.id, targetId),
     env.DB.prepare('DELETE FROM guest_registrations WHERE registered_by = ?1').bind(targetId),
     env.DB.prepare('DELETE FROM pool_rules_agreements WHERE user_id = ?1').bind(targetId),
     env.DB.prepare('DELETE FROM clubhouse_reservations WHERE user_id = ?1').bind(targetId),
@@ -2468,6 +2636,7 @@ async function handleApi(request, env) {
   }
   if (request.method === 'GET' && url.pathname === '/api/public/content') return publicContent(env)
   if (request.method === 'GET' && url.pathname === '/api/public/gallery') return publicGallery(env)
+  if (request.method === 'GET' && url.pathname === '/api/public/governing-documents') return governingDocuments(request, env)
   const galleryImageMatch = url.pathname.match(/^\/api\/gallery\/([^/]+)$/)
   if (galleryImageMatch && request.method === 'GET') return galleryImage(env, galleryImageMatch[1])
   const calendarDownloadMatch = url.pathname.match(/^\/api\/events\/([^/]+)\.ics$/)
@@ -2485,6 +2654,7 @@ async function handleApi(request, env) {
   if (request.method === 'POST' && url.pathname === '/api/auth/code/verify') return verifyLoginCode(request, env)
   if (request.method === 'POST' && url.pathname === '/api/auth/logout') return logout(request, env)
   if (request.method === 'GET' && url.pathname === '/api/portal/dashboard') return portalDashboard(request, env)
+  if (request.method === 'GET' && url.pathname === '/api/portal/governing-documents') return governingDocuments(request, env, false, true)
   if (request.method === 'POST' && url.pathname === '/api/portal/messages') return createResidentMessage(request, env)
   const portalMessageMatch = url.pathname.match(/^\/api\/portal\/messages\/([^/]+)$/)
   if (portalMessageMatch && request.method === 'DELETE') return deleteContactMessage(request, env, portalMessageMatch[1])
@@ -2505,12 +2675,15 @@ async function handleApi(request, env) {
   if (request.method === 'GET' && url.pathname === '/api/admin/guests.csv') return exportGuestsCsv(request, env)
   if (request.method === 'GET' && url.pathname === '/api/admin/pool-cards.csv') return exportPoolCardsCsv(request, env)
   if (request.method === 'GET' && url.pathname === '/api/admin/dashboard') return adminDashboard(request, env)
+  if (request.method === 'GET' && url.pathname === '/api/admin/governing-documents') return governingDocuments(request, env, true)
   if (request.method === 'POST' && url.pathname === '/api/admin/properties') return createProperty(request, env)
   if (request.method === 'POST' && url.pathname === '/api/admin/announcements') return createAnnouncement(request, env)
   if (request.method === 'POST' && url.pathname === '/api/admin/quick-links') return createQuickLink(request, env)
   if (request.method === 'POST' && url.pathname === '/api/admin/events') return createEvent(request, env)
   if (request.method === 'POST' && url.pathname === '/api/admin/documents') return createDocument(request, env)
   if (request.method === 'POST' && url.pathname === '/api/admin/documents/upload') return uploadDocument(request, env)
+  if (request.method === 'POST' && url.pathname === '/api/admin/governing-documents') return createGoverningDocument(request, env)
+  if (request.method === 'POST' && url.pathname === '/api/admin/governing-sections') return createGoverningSection(request, env)
   if (request.method === 'POST' && url.pathname === '/api/admin/gallery') return uploadGalleryPhoto(request, env)
   const adminGuestMatch = url.pathname.match(/^\/api\/admin\/guests\/([^/]+)$/)
   if (adminGuestMatch && request.method === 'DELETE') return deleteGuestRegistration(request, env, adminGuestMatch[1])
@@ -2543,6 +2716,12 @@ async function handleApi(request, env) {
   if (documentMatch && request.method === 'DELETE') return deleteDocument(request, env, documentMatch[1])
   const documentUploadMatch = url.pathname.match(/^\/api\/admin\/documents\/([^/]+)\/upload$/)
   if (documentUploadMatch && request.method === 'PUT') return replaceDocument(request, env, documentUploadMatch[1])
+  const governingDocumentMatch = url.pathname.match(/^\/api\/admin\/governing-documents\/([^/]+)$/)
+  if (governingDocumentMatch && request.method === 'PATCH') return updateGoverningDocument(request, env, governingDocumentMatch[1])
+  if (governingDocumentMatch && request.method === 'DELETE') return deleteGoverningDocument(request, env, governingDocumentMatch[1])
+  const governingSectionMatch = url.pathname.match(/^\/api\/admin\/governing-sections\/([^/]+)$/)
+  if (governingSectionMatch && request.method === 'PATCH') return updateGoverningSection(request, env, governingSectionMatch[1])
+  if (governingSectionMatch && request.method === 'DELETE') return deleteGoverningSection(request, env, governingSectionMatch[1])
   const adminReservationMatch = url.pathname.match(/^\/api\/admin\/reservations\/([^/]+)$/)
   if (adminReservationMatch && request.method === 'PATCH') return decideReservation(request, env, adminReservationMatch[1])
   if (adminReservationMatch && request.method === 'DELETE') return cancelReservation(request, env, adminReservationMatch[1])

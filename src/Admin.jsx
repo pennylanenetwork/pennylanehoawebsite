@@ -97,6 +97,7 @@ export default function Admin() {
     clubhouse: null,
     blackouts: [],
     quickLinks: [],
+    governingDocuments: [],
   })
   const [forms, setForms] = useState(emptyForms)
   const [editing, setEditing] = useState(null)
@@ -113,26 +114,28 @@ export default function Admin() {
   async function load() {
     const { user: currentUser } = await api('/api/auth/session')
     const fullAdmin = ['admin', 'super_admin'].includes(currentUser.role)
-    const [dashboard, { users }] = await Promise.all([
+    const [dashboard, { users }, governing] = await Promise.all([
       api('/api/admin/dashboard'),
       fullAdmin ? api('/api/admin/users') : Promise.resolve({ users: [] }),
+      fullAdmin ? api('/api/admin/governing-documents') : Promise.resolve({ documents: [] }),
     ])
     setUser(currentUser)
     setAccounts(users)
-    setData(dashboard)
+    setData({ ...dashboard, governingDocuments: governing.documents })
   }
 
   useEffect(() => {
     api('/api/auth/session')
       .then(async ({ user: currentUser }) => {
         const fullAdmin = ['admin', 'super_admin'].includes(currentUser.role)
-        const [dashboard, { users }] = await Promise.all([
+        const [dashboard, { users }, governing] = await Promise.all([
           api('/api/admin/dashboard'),
           fullAdmin ? api('/api/admin/users') : Promise.resolve({ users: [] }),
+          fullAdmin ? api('/api/admin/governing-documents') : Promise.resolve({ documents: [] }),
         ])
         setUser(currentUser)
         setAccounts(users)
-        setData(dashboard)
+        setData({ ...dashboard, governingDocuments: governing.documents })
         if (!fullAdmin) setTab(currentUser.isTreasurer && !currentUser.isAmenitiesCoordinator ? 'reservations' : currentUser.isAmenitiesCoordinator ? 'reservations' : 'messages')
       })
       .catch((requestError) => setError(requestError.message))
@@ -394,7 +397,7 @@ export default function Admin() {
   const canViewReservations = canManageReservations || Boolean(user?.isTreasurer)
   const canViewMessages = fullAdmin || Boolean(user?.isBoardMember) || Boolean(user?.isAccMember) || Boolean(user?.isTreasurer) || Boolean(user?.isAmenitiesCoordinator)
   const tabs = fullAdmin
-    ? ['overview', 'accounts', 'properties', 'access', 'in the know', 'quick links', 'announcements', 'events', 'documents', 'photos', 'reservations', 'messages']
+    ? ['overview', 'accounts', 'properties', 'access', 'in the know', 'quick links', 'announcements', 'events', 'documents', 'governing documents', 'photos', 'reservations', 'messages']
     : [...(canViewReservations ? ['reservations'] : []), ...(canViewMessages ? ['messages'] : [])]
   const normalizedPropertyQuery = propertyQuery.trim().toLowerCase()
   const visibleProperties = data.properties.filter((property) => `${property.address} ${property.residentNames || ''}`.toLowerCase().includes(normalizedPropertyQuery))
@@ -748,6 +751,8 @@ export default function Admin() {
           />
         )}
 
+        {tab === 'governing documents' && <GoverningDocumentsManager documents={data.governingDocuments} sourceDocuments={data.documents} onChanged={load} />}
+
         {tab === 'photos' && <PhotoManager photos={data.photos} onUpload={uploadPhoto} onUpdate={updatePhoto} onDelete={(id) => remove('gallery', id, 'Delete this photo permanently?')} />}
 
         {tab === 'reservations' && (
@@ -961,6 +966,124 @@ function ClubhouseControls({ settings, blackouts, onSave, onAddBlackout, onDelet
       </div>
     </section>
   )
+}
+
+function GoverningDocumentsManager({ documents, sourceDocuments, onChanged }) {
+  const emptyDocument = { title: '', documentType: 'Covenants', summary: '', audience: 'public', status: 'draft', effectiveDate: '', recordingInfo: '', sourceDocumentId: '', sortOrder: 0 }
+  const emptySection = { sectionLabel: '', title: '', body: '', sortOrder: 0 }
+  const [selectedId, setSelectedId] = useState(documents[0]?.id || '')
+  const [documentForm, setDocumentForm] = useState(emptyDocument)
+  const [sectionForm, setSectionForm] = useState(emptySection)
+  const [editingDocumentId, setEditingDocumentId] = useState(null)
+  const [editingSectionId, setEditingSectionId] = useState(null)
+  const [notice, setNotice] = useState('')
+  const [error, setError] = useState('')
+  const selected = documents.find((item) => item.id === selectedId) || documents[0]
+
+  async function saveDocument(event) {
+    event.preventDefault()
+    setError('')
+    setNotice('')
+    try {
+      await api(`/api/admin/governing-documents${editingDocumentId ? `/${editingDocumentId}` : ''}`, {
+        method: editingDocumentId ? 'PATCH' : 'POST', body: JSON.stringify({ ...documentForm, sortOrder: Number(documentForm.sortOrder) }),
+      })
+      setDocumentForm(emptyDocument)
+      setEditingDocumentId(null)
+      setNotice('Governing document saved.')
+      await onChanged()
+    } catch (requestError) { setError(requestError.message) }
+  }
+
+  async function saveSection(event) {
+    event.preventDefault()
+    if (!selected) return
+    setError('')
+    setNotice('')
+    try {
+      await api(`/api/admin/governing-sections${editingSectionId ? `/${editingSectionId}` : ''}`, {
+        method: editingSectionId ? 'PATCH' : 'POST',
+        body: JSON.stringify({ ...sectionForm, documentId: selected.id, sortOrder: Number(sectionForm.sortOrder) }),
+      })
+      setSectionForm(emptySection)
+      setEditingSectionId(null)
+      setNotice('Section saved.')
+      await onChanged()
+    } catch (requestError) { setError(requestError.message) }
+  }
+
+  async function removeRecord(endpoint, id, message) {
+    if (!window.confirm(message)) return
+    setError('')
+    try {
+      await api(`/api/admin/${endpoint}/${id}`, { method: 'DELETE' })
+      setNotice('Deleted successfully.')
+      await onChanged()
+    } catch (requestError) { setError(requestError.message) }
+  }
+
+  function editDocument(item) {
+    setDocumentForm({ ...emptyDocument, ...item, effectiveDate: item.effectiveDate || '', sourceDocumentId: item.sourceDocumentId || '' })
+    setEditingDocumentId(item.id)
+    window.scrollTo({ top: 0, behavior: 'smooth' })
+  }
+
+  function editSection(item) {
+    setSectionForm({ sectionLabel: item.sectionLabel || '', title: item.title, body: item.body, sortOrder: item.sortOrder })
+    setEditingSectionId(item.id)
+  }
+
+  return <section className="governing-admin">
+    <header className="dashboard-heading"><div><p className="portal-kicker">Website management</p><h1>Governing documents</h1><p>Create a navigable reference copy and link it to the authoritative uploaded file.</p></div><a className="secondary-button" href="/governing-documents" target="_blank" rel="noreferrer">View public page</a></header>
+    {notice && <p className="form-notice" role="status">{notice}</p>}
+    {error && <p className="form-error" role="alert">{error}</p>}
+    <div className="governing-admin-layout">
+      <section className="editor-panel">
+        <h2>{editingDocumentId ? 'Edit document' : 'Add document'}</h2>
+        <form onSubmit={saveDocument}>
+          <label>Title<input required maxLength="180" value={documentForm.title} onChange={(event) => setDocumentForm({ ...documentForm, title: event.target.value })} /></label>
+          <div className="field-row">
+            <label>Type<select value={documentForm.documentType} onChange={(event) => setDocumentForm({ ...documentForm, documentType: event.target.value })}><option>Bylaws</option><option>Covenants</option><option>Rules</option><option>Amendment</option><option>Policy</option></select></label>
+            <label>Display order<input required type="number" value={documentForm.sortOrder} onChange={(event) => setDocumentForm({ ...documentForm, sortOrder: event.target.value })} /></label>
+          </div>
+          <label>Summary<textarea maxLength="2000" value={documentForm.summary || ''} onChange={(event) => setDocumentForm({ ...documentForm, summary: event.target.value })} /></label>
+          <div className="field-row">
+            <label>Effective date<input type="date" value={documentForm.effectiveDate || ''} onChange={(event) => setDocumentForm({ ...documentForm, effectiveDate: event.target.value })} /></label>
+            <label>Recording information<input maxLength="500" value={documentForm.recordingInfo || ''} onChange={(event) => setDocumentForm({ ...documentForm, recordingInfo: event.target.value })} /></label>
+          </div>
+          <label>Authoritative file<select value={documentForm.sourceDocumentId || ''} onChange={(event) => setDocumentForm({ ...documentForm, sourceDocumentId: event.target.value })}><option value="">No file selected</option>{sourceDocuments.map((item) => <option value={item.id} key={item.id}>{item.title}</option>)}</select><span>Upload the original under Documents first, then select it here.</span></label>
+          <div className="field-row">
+            <label>Audience<select value={documentForm.audience} onChange={(event) => setDocumentForm({ ...documentForm, audience: event.target.value })}><option value="public">Public</option><option value="members">Members only</option></select></label>
+            <label>Status<select value={documentForm.status} onChange={(event) => setDocumentForm({ ...documentForm, status: event.target.value })}><option value="draft">Draft</option><option value="published">Published</option><option value="archived">Archived</option></select></label>
+          </div>
+          <FormActions editing={Boolean(editingDocumentId)} label="Save document" onCancel={() => { setDocumentForm(emptyDocument); setEditingDocumentId(null) }} />
+        </form>
+      </section>
+      <section className="governing-admin-list">
+        <h2>Documents</h2>
+        {documents.map((item) => <article className={selected?.id === item.id ? 'selected' : ''} key={item.id}>
+          <button type="button" className="governing-select" onClick={() => { setSelectedId(item.id); setEditingSectionId(null); setSectionForm(emptySection) }}><strong>{item.title}</strong><small>{item.documentType} | {item.status} | {item.sections.length} sections</small></button>
+          <div className="row-actions"><button type="button" onClick={() => editDocument(item)}>Edit</button><button type="button" className="row-delete" onClick={() => removeRecord('governing-documents', item.id, `Delete ${item.title} and every indexed section?`)}>Delete</button></div>
+        </article>)}
+        {documents.length === 0 && <p className="empty-state">Add a document to begin indexing its sections.</p>}
+      </section>
+    </div>
+    {selected && <section className="governing-section-manager">
+      <div className="editor-panel">
+        <h2>{editingSectionId ? 'Edit section' : `Add section to ${selected.title}`}</h2>
+        <form onSubmit={saveSection}>
+          <div className="field-row"><label>Article or section label<input maxLength="80" placeholder="Article I or Section 4.2" value={sectionForm.sectionLabel} onChange={(event) => setSectionForm({ ...sectionForm, sectionLabel: event.target.value })} /></label><label>Display order<input required type="number" value={sectionForm.sortOrder} onChange={(event) => setSectionForm({ ...sectionForm, sortOrder: event.target.value })} /></label></div>
+          <label>Section title<input required maxLength="180" value={sectionForm.title} onChange={(event) => setSectionForm({ ...sectionForm, title: event.target.value })} /></label>
+          <label>Section text<textarea className="governing-body-editor" required maxLength="30000" value={sectionForm.body} onChange={(event) => setSectionForm({ ...sectionForm, body: event.target.value })} /><span>Use blank lines to separate paragraphs. Compare the text carefully with the original document before publishing.</span></label>
+          <FormActions editing={Boolean(editingSectionId)} label="Save section" onCancel={() => { setSectionForm(emptySection); setEditingSectionId(null) }} />
+        </form>
+      </div>
+      <div className="governing-section-list">
+        {selected.sections.map((item) => <article key={item.id}><div><small>{item.sectionLabel}</small><strong>{item.title}</strong><p>{item.body}</p></div><div className="row-actions"><button type="button" onClick={() => editSection(item)}>Edit</button><button type="button" className="row-delete" onClick={() => removeRecord('governing-sections', item.id, `Delete ${item.title}?`)}>Delete</button></div></article>)}
+        {selected.sections.length === 0 && <p className="empty-state">No indexed sections have been added.</p>}
+      </div>
+    </section>}
+  </section>
 }
 
 function AccessWorkspace({ guests, poolCards, currentUser, onDeleteGuest }) {
