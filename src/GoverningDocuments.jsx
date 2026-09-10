@@ -1,6 +1,16 @@
 import { useEffect, useMemo, useState } from 'react'
 import './App.css'
 
+function highlightedText(value, query) {
+  const text = String(value || '')
+  const term = query.trim()
+  if (!term) return text
+  const escaped = term.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')
+  const matcher = new RegExp(`(${escaped})`, 'gi')
+  return text.split(matcher).map((part, index) =>
+    part.toLowerCase() === term.toLowerCase() ? <mark key={`${index}-${part}`}>{part}</mark> : part)
+}
+
 export default function GoverningDocuments() {
   const [documents, setDocuments] = useState([])
   const [activeId, setActiveId] = useState('')
@@ -64,7 +74,7 @@ export default function GoverningDocuments() {
           <label htmlFor="governing-search">Search this document</label>
           <input id="governing-search" type="search" placeholder="Article, section, or phrase" value={query} onChange={(event) => setQuery(event.target.value)} />
           <nav aria-label={`${active.title} sections`}>
-            {sections.map((section) => <a href={`#${section.slug}`} key={section.id}><span>{section.sectionLabel}</span>{section.title}</a>)}
+            {sections.map((section) => <a href={`#${section.slug}`} key={section.id}><span>{highlightedText(section.sectionLabel, query)}</span>{highlightedText(section.title, query)}</a>)}
             {sections.length === 0 && <p>No matching sections.</p>}
           </nav>
         </aside>
@@ -82,9 +92,9 @@ export default function GoverningDocuments() {
           <p className="governing-disclaimer"><strong>Reference copy:</strong> This online text is provided for convenient reference. If it differs from the officially recorded or adopted document, the official document controls.</p>
           <div className="governing-sections">
             {sections.map((section) => <section id={section.slug} key={section.id}>
-              {section.sectionLabel && <p>{section.sectionLabel}</p>}
-              <h3>{section.title}</h3>
-              <div>{section.body}</div>
+              {section.sectionLabel && <p>{highlightedText(section.sectionLabel, query)}</p>}
+              <h3>{highlightedText(section.title, query)}</h3>
+              <div>{highlightedText(section.body, query)}</div>
               <a href="#top" aria-label="Return to the document index">Back to index</a>
             </section>)}
           </div>
