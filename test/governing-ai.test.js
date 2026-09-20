@@ -19,6 +19,7 @@ test('retrieval does not return unrelated sections', () => {
 })
 
 test('extracts the completion from the configured model response', () => {
+  assert.equal(governingAiAnswer({ response: '  Section 4 requires approval.  ' }), 'Section 4 requires approval.')
   assert.equal(governingAiAnswer({ choices: [{ message: { content: '  Section 4 requires approval.  ' } }] }), 'Section 4 requires approval.')
   assert.equal(governingAiAnswer({ choices: [] }), '')
 })
