@@ -16,6 +16,10 @@ export default function GoverningDocuments() {
   const [activeId, setActiveId] = useState('')
   const [query, setQuery] = useState('')
   const [error, setError] = useState('')
+  const [question, setQuestion] = useState('')
+  const [answer, setAnswer] = useState(null)
+  const [askError, setAskError] = useState('')
+  const [asking, setAsking] = useState(false)
 
   useEffect(() => {
     fetch('/api/auth/session')
@@ -38,6 +42,10 @@ export default function GoverningDocuments() {
   }, [])
 
   const active = documents.find((item) => item.id === activeId) || documents[0]
+  useEffect(() => {
+    if (!active || !window.location.hash) return
+    requestAnimationFrame(() => document.getElementById(decodeURIComponent(window.location.hash.slice(1)))?.scrollIntoView())
+  }, [active])
   const sections = useMemo(() => {
     const normalized = query.trim().toLowerCase()
     if (!normalized) return active?.sections || []
@@ -50,6 +58,28 @@ export default function GoverningDocuments() {
     setQuery('')
     window.history.replaceState(null, '', `/governing-documents?document=${encodeURIComponent(document.slug)}`)
     window.scrollTo({ top: 0, behavior: 'smooth' })
+  }
+
+  async function askQuestion(event) {
+    event.preventDefault()
+    if (asking || question.trim().length < 8) return
+    setAsking(true)
+    setAnswer(null)
+    setAskError('')
+    try {
+      const response = await fetch('/api/portal/governing-documents/ask', {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({ question: question.trim() }),
+      })
+      const result = await response.json()
+      if (!response.ok) throw new Error(result.error || 'Unable to answer this question.')
+      setAnswer(result)
+    } catch (requestError) {
+      setAskError(requestError.message)
+    } finally {
+      setAsking(false)
+    }
   }
 
   return <main className="governing-page" id="top">
@@ -66,6 +96,16 @@ export default function GoverningDocuments() {
     {error && <p className="governing-state" role="alert">{error}</p>}
     {!error && documents.length === 0 && <p className="governing-state">No governing documents have been published yet.</p>}
     {active && <>
+      <section className="governing-ask" aria-labelledby="governing-ask-title">
+        <h2 id="governing-ask-title">Ask the documents</h2>
+        <form onSubmit={askQuestion}>
+          <label htmlFor="governing-question">Your question</label>
+          <div className="governing-ask-input"><input id="governing-question" value={question} maxLength={500} onChange={(event) => setQuestion(event.target.value)} placeholder="What do the covenants say about fences?" /><button type="submit" disabled={asking || question.trim().length < 8}>{asking ? 'Checking...' : 'Ask'}</button></div>
+        </form>
+        <p>Answers use published documents only. Limit: 10 questions per resident per day. The official documents control.</p>
+        {askError && <p role="alert">{askError}</p>}
+        {answer && <div className="governing-answer" aria-live="polite"><p>{answer.answer}</p>{answer.sources.length > 0 && <><h3>Relevant sections</h3><ul>{answer.sources.map((source) => <li key={source.url}><a href={source.url}>{source.title}</a></li>)}</ul></>}</div>}
+      </section>
       <nav className="governing-tabs" aria-label="Choose governing document">
         {documents.map((document) => <button type="button" className={document.id === active.id ? 'active' : ''} onClick={() => selectDocument(document)} key={document.id}>{document.title}</button>)}
       </nav>

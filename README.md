@@ -30,6 +30,8 @@ npm run cf:deploy
 
 Cloudflare resource bindings for D1, R2, Turnstile, email, OAuth, and payment services are configured for the resident portal and administration features. Local secrets belong in `.dev.vars`, which is excluded from Git.
 
+The resident governing-documents page also uses the Workers AI binding. It uses a model available on Workers Free, retrieves only published governing sections, and limits questions to 10 per resident and 100 site-wide per UTC day. When the daily AI allowance or a question limit is reached, the ordinary document search remains available. Apply migration `0028_governing_ai_usage.sql` before deploying this feature. The AI binding is not required for the local Vite-only preview; use `npm run cf:dev` to test the Worker endpoint.
+
 ## Database migrations
 
 D1 schema changes are versioned in `migrations/`. Apply and verify migrations locally before applying them to production:

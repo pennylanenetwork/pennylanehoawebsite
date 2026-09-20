@@ -35,6 +35,9 @@
       "bucket_name": "penny-lane-hoa-documents"
     }
   ],
+  "ai": {
+    "binding": "AI"
+  },
   "services": [
     {
       "binding": "TURNSTILE",
