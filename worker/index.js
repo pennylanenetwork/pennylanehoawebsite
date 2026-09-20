@@ -838,6 +838,32 @@ async function portalDashboard(request, env) {
   })
 }
 
+async function portalCalendarMonth(request, env) {
+  await requireUser(request, env)
+  const url = new URL(request.url)
+  const startValue = url.searchParams.get('start')
+  const endValue = url.searchParams.get('end')
+  const start = new Date(startValue)
+  const end = new Date(endValue)
+  if (!startValue || !endValue || !Number.isFinite(start.getTime()) || !Number.isFinite(end.getTime())
+    || end <= start || end.getTime() - start.getTime() > 43 * 24 * 60 * 60 * 1000) {
+    throw new ResponseError('Select a valid calendar month.', 400)
+  }
+  const events = await env.DB.prepare(`SELECT id,
+    CASE WHEN event_type = 'clubhouse' THEN 'Clubhouse Reserved' ELSE title END AS title,
+    CASE WHEN event_type = 'clubhouse' THEN 'The clubhouse is reserved during this period.' ELSE description END AS description,
+    starts_at AS startsAt, ends_at AS endsAt, audience, event_type AS eventType, 0 AS allDay
+    FROM events WHERE status = 'scheduled' AND starts_at < ?2 AND ends_at > ?1
+    UNION ALL
+    SELECT 'blackout-' || id AS id, title,
+      COALESCE(notes, 'The clubhouse is unavailable during this period.') AS description,
+      starts_at AS startsAt, ends_at AS endsAt, 'members' AS audience,
+      'blackout' AS eventType, all_day AS allDay
+    FROM clubhouse_blackouts WHERE starts_at < ?2 AND ends_at > ?1
+    ORDER BY startsAt`).bind(start.toISOString(), end.toISOString()).all()
+  return json({ events: events.results })
+}
+
 function groupGoverningDocuments(documents, sections) {
   const byDocument = sections.reduce((result, section) => {
     if (!result[section.documentId]) result[section.documentId] = []
@@ -2730,6 +2756,7 @@ async function handleApi(request, env) {
   if (request.method === 'POST' && url.pathname === '/api/auth/code/verify') return verifyLoginCode(request, env)
   if (request.method === 'POST' && url.pathname === '/api/auth/logout') return logout(request, env)
   if (request.method === 'GET' && url.pathname === '/api/portal/dashboard') return portalDashboard(request, env)
+  if (request.method === 'GET' && url.pathname === '/api/portal/calendar') return portalCalendarMonth(request, env)
   if (request.method === 'GET' && url.pathname === '/api/portal/governing-documents') return governingDocuments(request, env, false, true)
   if (request.method === 'POST' && url.pathname === '/api/portal/governing-documents/ask') return askGoverningDocuments(request, env)
   if (request.method === 'POST' && url.pathname === '/api/portal/messages') return createResidentMessage(request, env)

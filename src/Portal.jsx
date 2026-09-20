@@ -961,17 +961,40 @@ function ResidentMessageThread({ item, dateTime, onReply, onDelete }) {
   )
 }
 
+function CalendarEventList({ events, emptyMessage }) {
+  const dateTime = (value) => new Intl.DateTimeFormat('en-US', { dateStyle: 'medium', timeStyle: 'short' }).format(new Date(value))
+  return <div className="data-list">
+    {events.map((item) => <div className="calendar-row" key={item.id}>
+      <time>{item.allDay ? `${new Intl.DateTimeFormat('en-US', { dateStyle: 'medium', timeZone: 'America/Chicago' }).format(new Date(item.startsAt))} - All day` : dateTime(item.startsAt)}</time>
+      <div><strong>{item.title}</strong><p>{item.description}</p></div>
+      <span>{item.eventType}</span>
+      {item.eventType !== 'blackout' && <a className="calendar-download" href={`/api/events/${item.id}.ics`} title="Add to calendar">Add</a>}
+    </div>)}
+    {events.length === 0 && <p className="empty-state">{emptyMessage}</p>}
+  </div>
+}
+
 function CalendarView({ events }) {
   const [view, setView] = useState('month')
   const [month, setMonth] = useState(() => {
     const date = new Date()
     return new Date(date.getFullYear(), date.getMonth(), 1)
   })
-  const dateTime = (value) =>
-    new Intl.DateTimeFormat('en-US', {
-      dateStyle: 'medium',
-      timeStyle: 'short',
-    }).format(new Date(value))
+  const [monthResult, setMonthResult] = useState(null)
+  const monthKey = `${month.getFullYear()}-${month.getMonth()}`
+  useEffect(() => {
+    let current = true
+    const gridStart = new Date(month.getFullYear(), month.getMonth(), 1)
+    gridStart.setDate(1 - gridStart.getDay())
+    const gridEnd = new Date(gridStart)
+    gridEnd.setDate(gridEnd.getDate() + 42)
+    const start = gridStart.toISOString()
+    const end = gridEnd.toISOString()
+    api(`/api/portal/calendar?start=${encodeURIComponent(start)}&end=${encodeURIComponent(end)}`)
+      .then((result) => { if (current) setMonthResult({ key: monthKey, events: result.events }) })
+      .catch((error) => { if (current) setMonthResult({ key: monthKey, error: error.message }) })
+    return () => { current = false }
+  }, [month, monthKey])
   const compactTime = (value) => new Intl.DateTimeFormat('en-US', { hour: 'numeric', minute: '2-digit' }).format(new Date(value)).replace(':00', '')
   const monthLabel = new Intl.DateTimeFormat('en-US', {
     month: 'long',
@@ -990,6 +1013,10 @@ function CalendarView({ events }) {
     const dayEnd = new Date(date.getFullYear(), date.getMonth(), date.getDate() + 1)
     return new Date(item.startsAt) < dayEnd && new Date(item.endsAt) > dayStart
   }
+  const currentMonthResult = monthResult?.key === monthKey ? monthResult : null
+  const displayedEvents = currentMonthResult?.events || []
+  const monthEnd = new Date(month.getFullYear(), month.getMonth() + 1, 1)
+  const listedEvents = displayedEvents.filter((item) => new Date(item.startsAt) < monthEnd && new Date(item.endsAt) > first)
 
   return (
     <section className="calendar-workspace">
@@ -1014,7 +1041,7 @@ function CalendarView({ events }) {
           </div>
         )}
       </header>
-      {view === 'month' ? (
+      {view === 'month' ? (<>
         <div className="month-calendar">
           <div className="weekday-row">
             {['Sun', 'Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat'].map((day) => (
@@ -1023,7 +1050,7 @@ function CalendarView({ events }) {
           </div>
           <div className="month-grid">
             {days.map((day) => {
-              const dayEvents = events.filter((item) => occursOnDay(item, day))
+              const dayEvents = displayedEvents.filter((item) => occursOnDay(item, day))
               return (
                 <div className={`month-day ${day.getMonth() !== month.getMonth() ? 'outside' : ''}`} key={day.toISOString()}>
                   <time>{day.getDate()}</time>
@@ -1040,22 +1067,11 @@ function CalendarView({ events }) {
             })}
           </div>
         </div>
-      ) : (
-        <div className="data-list">
-          {events.map((item) => (
-            <div className="calendar-row" key={item.id}>
-              <time>{item.allDay ? `${new Intl.DateTimeFormat('en-US', { dateStyle: 'medium', timeZone: 'America/Chicago' }).format(new Date(item.startsAt))} - All day` : dateTime(item.startsAt)}</time>
-              <div>
-                <strong>{item.title}</strong>
-                <p>{item.description}</p>
-              </div>
-              <span>{item.eventType}</span>
-              {item.eventType !== 'blackout' && <a className="calendar-download" href={`/api/events/${item.id}.ics`} title="Add to calendar">Add</a>}
-            </div>
-          ))}
-          {events.length === 0 && <p className="empty-state">No upcoming events.</p>}
-        </div>
-      )}
+        <section className="calendar-month-list" aria-label={`Events in ${monthLabel}`}>
+          <h3>Events in {monthLabel}</h3>
+          {currentMonthResult?.error ? <p className="empty-state" role="alert">{currentMonthResult.error}</p> : currentMonthResult?.events ? <CalendarEventList events={listedEvents} emptyMessage="No events this month." /> : <p className="empty-state">Loading events...</p>}
+        </section>
+      </>) : <CalendarEventList events={events} emptyMessage="No upcoming events." />}
     </section>
   )
 }
