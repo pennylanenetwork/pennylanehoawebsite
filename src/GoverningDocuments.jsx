@@ -11,6 +11,14 @@ function highlightedText(value, query) {
     part.toLowerCase() === term.toLowerCase() ? <mark key={`${index}-${part}`}>{part}</mark> : part)
 }
 
+function citedAnswer(value, sources) {
+  return String(value || '').split(/(\[\d+\])/g).map((part, index) => {
+    const match = /^\[(\d+)\]$/.exec(part)
+    const source = match && sources[Number(match[1]) - 1]
+    return source ? <a key={index} href={source.url} title={source.title}>{part}</a> : part
+  })
+}
+
 export default function GoverningDocuments() {
   const [documents, setDocuments] = useState([])
   const [activeId, setActiveId] = useState('')
@@ -104,7 +112,7 @@ export default function GoverningDocuments() {
         </form>
         <p>Answers use published documents only. Limit: 10 questions per resident per day. The official documents control.</p>
         {askError && <p role="alert">{askError}</p>}
-        {answer && <div className="governing-answer" aria-live="polite"><p>{answer.answer}</p>{answer.sources.length > 0 && <><h3>Relevant sections</h3><ul>{answer.sources.map((source) => <li key={source.url}><a href={source.url}>{source.title}</a></li>)}</ul></>}</div>}
+        {answer && <div className="governing-answer" aria-live="polite"><h3>Answer</h3><p>{citedAnswer(answer.answer, answer.sources)}</p>{answer.sources.length > 0 && <><h3>Sources</h3><ul>{answer.sources.map((source, index) => <li key={source.url}><a href={source.url}>[{index + 1}] {source.title}</a></li>)}</ul></>}</div>}
       </section>
       <nav className="governing-tabs" aria-label="Choose governing document">
         {documents.map((document) => <button type="button" className={document.id === active.id ? 'active' : ''} onClick={() => selectDocument(document)} key={document.id}>{document.title}</button>)}
