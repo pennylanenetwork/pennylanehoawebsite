@@ -684,6 +684,55 @@ async function quickBooksFetch(env, path) {
   return result
 }
 
+function safeQuickBooksInvoiceLink(value) {
+  if (!value) return null
+  try {
+    const url = new URL(String(value))
+    const trustedHost = url.hostname === 'intuit.com' || url.hostname.endsWith('.intuit.com')
+    return url.protocol === 'https:' && trustedHost ? url.toString() : null
+  } catch {
+    return null
+  }
+}
+
+export function normalizeQuickBooksInvoice(invoice, syncRunId) {
+  const id = String(invoice?.Id || '').trim()
+  const customerId = String(invoice?.CustomerRef?.value || '').trim()
+  const transactionDate = String(invoice?.TxnDate || '').trim()
+  const balance = Number(invoice?.Balance)
+  const totalAmount = Number(invoice?.TotalAmt)
+  if (!id || !customerId || !/^\d{4}-\d{2}-\d{2}$/.test(transactionDate)
+    || !Number.isFinite(balance) || balance <= 0 || !Number.isFinite(totalAmount)) return null
+  const dueDate = String(invoice?.DueDate || '').trim()
+  return {
+    id,
+    customerId,
+    documentNumber: String(invoice?.DocNumber || '').trim() || null,
+    transactionDate,
+    dueDate: /^\d{4}-\d{2}-\d{2}$/.test(dueDate) ? dueDate : null,
+    totalAmount,
+    balance,
+    invoiceLink: safeQuickBooksInvoiceLink(invoice?.InvoiceLink),
+    allowOnlineAch: invoice?.AllowOnlineACHPayment === true,
+    allowOnlineCard: invoice?.AllowOnlineCreditCardPayment === true,
+    syncRunId,
+  }
+}
+
+async function quickBooksOpenInvoices(env) {
+  const invoices = []
+  let startPosition = 1
+  while (startPosition <= 5000) {
+    const query = encodeURIComponent(`select * from Invoice where Balance > '0' startposition ${startPosition} maxresults 1000`)
+    const result = await quickBooksFetch(env, `/v3/company/{realmId}/query?query=${query}&include=invoiceLink`)
+    const page = result.QueryResponse?.Invoice || []
+    invoices.push(...page)
+    if (page.length < 1000) return invoices
+    startPosition += page.length
+  }
+  throw new ResponseError('QuickBooks returned too many open invoices to synchronize safely.', 502)
+}
+
 export function canAccessMessage(user, category) {
   return user.role === 'super_admin'
     || (['general', 'maintenance', 'board'].includes(category) && Boolean(user.isBoardMember))
@@ -851,7 +900,7 @@ async function clubhouseAvailability(env, startsAt, endsAt, excludeReservationId
 
 async function portalDashboard(request, env) {
   const user = await requireUser(request, env)
-  const [announcements, events, documents, reservations, messages, messageReplies, guests, household, poolCards, poolAgreements, boardMembers, clubhouse, duesAccount] = await env.DB.batch([
+  const [announcements, events, documents, reservations, messages, messageReplies, guests, household, poolCards, poolAgreements, boardMembers, clubhouse, duesAccount, duesInvoices] = await env.DB.batch([
     env.DB.prepare(`SELECT id, title, body, audience, published_at AS publishedAt FROM announcements
       WHERE published_at <= CURRENT_TIMESTAMP ORDER BY published_at DESC LIMIT 20`),
     env.DB.prepare(`SELECT id,
@@ -921,6 +970,17 @@ async function portalDashboard(request, env) {
         ON quickbooks_customers.id = properties.quickbooks_customer_id
       INNER JOIN quickbooks_connections ON quickbooks_connections.id = 1
       WHERE properties.id = ?1 AND ?2 = 'owner'`).bind(user.propertyId, user.residentType),
+    env.DB.prepare(`SELECT quickbooks_invoices.id, quickbooks_invoices.document_number AS documentNumber,
+      quickbooks_invoices.transaction_date AS transactionDate, quickbooks_invoices.due_date AS dueDate,
+      quickbooks_invoices.total_amount AS totalAmount, quickbooks_invoices.balance,
+      quickbooks_invoices.invoice_link AS invoiceLink,
+      quickbooks_invoices.allow_online_ach AS allowOnlineAch,
+      quickbooks_invoices.allow_online_card AS allowOnlineCard
+      FROM properties INNER JOIN quickbooks_invoices
+        ON quickbooks_invoices.customer_id = properties.quickbooks_customer_id
+      WHERE properties.id = ?1 AND ?2 = 'owner'
+      ORDER BY COALESCE(quickbooks_invoices.due_date, quickbooks_invoices.transaction_date),
+        quickbooks_invoices.document_number`).bind(user.propertyId, user.residentType),
   ])
   const repliesByMessage = messageReplies.results.reduce((result, reply) => {
     if (!result[reply.messageId]) result[reply.messageId] = []
@@ -940,6 +1000,7 @@ async function portalDashboard(request, env) {
     boardMembers: boardMembers.results,
     clubhouse: clubhouse.results[0],
     duesAccount: duesAccount.results[0] || null,
+    duesInvoices: user.residentType === 'owner' ? duesInvoices.results : [],
   })
 }
 
@@ -2882,7 +2943,7 @@ async function finishQuickBooksAuth(request, env) {
 
 async function quickBooksAdminStatus(request, env) {
   await requireSuperAdmin(request, env)
-  const [connection, customers, mappings] = await env.DB.batch([
+  const [connection, customers, mappings, invoiceSummary] = await env.DB.batch([
     env.DB.prepare(`SELECT realm_id AS realmId, company_name AS companyName,
       last_synced_at AS lastSyncedAt, last_sync_attempt_at AS lastSyncAttemptAt,
       last_sync_status AS lastSyncStatus, last_sync_error AS lastSyncError,
@@ -2893,26 +2954,49 @@ async function quickBooksAdminStatus(request, env) {
       properties.street_number || ' ' || properties.street_name || ' ' || properties.street_suffix AS address,
       properties.quickbooks_customer_id AS customerId FROM properties
       WHERE properties.quickbooks_customer_id IS NOT NULL ORDER BY properties.street_name, properties.street_number`),
+    env.DB.prepare(`SELECT COUNT(*) AS openInvoiceCount,
+      COALESCE(SUM(balance), 0) AS openInvoiceBalance FROM quickbooks_invoices`),
   ])
-  return json({ connection: connection.results[0] || null, customers: customers.results, mappings: mappings.results })
+  return json({ connection: connection.results[0] || null, customers: customers.results, mappings: mappings.results,
+    invoiceSummary: invoiceSummary.results[0] })
 }
 
 async function syncQuickBooksCustomers(request, env) {
   await requireSuperAdmin(request, env)
   try {
-    const query = encodeURIComponent('select * from Customer startposition 1 maxresults 1000')
-    const result = await quickBooksFetch(env, `/v3/company/{realmId}/query?query=${query}`)
-    const customers = result.QueryResponse?.Customer || []
-    const statements = customers.map((customer) => env.DB.prepare(`INSERT INTO quickbooks_customers
+    const customerQuery = encodeURIComponent('select * from Customer startposition 1 maxresults 1000')
+    const customerResult = await quickBooksFetch(env, `/v3/company/{realmId}/query?query=${customerQuery}`)
+    const customers = customerResult.QueryResponse?.Customer || []
+    const invoiceResult = await quickBooksOpenInvoices(env)
+    const syncRunId = crypto.randomUUID()
+    const invoices = invoiceResult.map((invoice) => normalizeQuickBooksInvoice(invoice, syncRunId)).filter(Boolean)
+    const customerStatements = customers.map((customer) => env.DB.prepare(`INSERT INTO quickbooks_customers
       (id, display_name, balance, active, synced_at) VALUES (?1, ?2, ?3, ?4, CURRENT_TIMESTAMP)
       ON CONFLICT (id) DO UPDATE SET display_name = excluded.display_name, balance = excluded.balance,
         active = excluded.active, synced_at = CURRENT_TIMESTAMP`)
       .bind(String(customer.Id), String(customer.DisplayName || `Customer ${customer.Id}`), Number(customer.Balance || 0), customer.Active === false ? 0 : 1))
-    if (statements.length) await env.DB.batch(statements)
-    await env.DB.prepare(`UPDATE quickbooks_connections SET last_synced_at = CURRENT_TIMESTAMP,
-      last_sync_attempt_at = CURRENT_TIMESTAMP, last_sync_status = 'success', last_sync_error = NULL,
-      updated_at = CURRENT_TIMESTAMP WHERE id = 1`).run()
-    return json({ synced: customers.length })
+    const invoiceStatements = invoices.map((invoice) => env.DB.prepare(`INSERT INTO quickbooks_invoices
+      (id, customer_id, document_number, transaction_date, due_date, total_amount, balance,
+        invoice_link, allow_online_ach, allow_online_card, sync_run_id, synced_at)
+      VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, CURRENT_TIMESTAMP)
+      ON CONFLICT (id) DO UPDATE SET customer_id = excluded.customer_id,
+        document_number = excluded.document_number, transaction_date = excluded.transaction_date,
+        due_date = excluded.due_date, total_amount = excluded.total_amount, balance = excluded.balance,
+        invoice_link = excluded.invoice_link, allow_online_ach = excluded.allow_online_ach,
+        allow_online_card = excluded.allow_online_card, sync_run_id = excluded.sync_run_id,
+        synced_at = CURRENT_TIMESTAMP`)
+      .bind(invoice.id, invoice.customerId, invoice.documentNumber, invoice.transactionDate, invoice.dueDate,
+        invoice.totalAmount, invoice.balance, invoice.invoiceLink, invoice.allowOnlineAch ? 1 : 0,
+        invoice.allowOnlineCard ? 1 : 0, invoice.syncRunId))
+    await env.DB.batch([
+      ...customerStatements,
+      ...invoiceStatements,
+      env.DB.prepare('DELETE FROM quickbooks_invoices WHERE sync_run_id != ?1').bind(syncRunId),
+      env.DB.prepare(`UPDATE quickbooks_connections SET last_synced_at = CURRENT_TIMESTAMP,
+        last_sync_attempt_at = CURRENT_TIMESTAMP, last_sync_status = 'success', last_sync_error = NULL,
+        updated_at = CURRENT_TIMESTAMP WHERE id = 1`),
+    ])
+    return json({ synced: customers.length, invoices: invoices.length })
   } catch (error) {
     const message = error instanceof ResponseError ? error.message : 'QuickBooks synchronization failed.'
     await env.DB.prepare(`UPDATE quickbooks_connections SET last_sync_attempt_at = CURRENT_TIMESTAMP,
@@ -2949,6 +3033,7 @@ async function disconnectQuickBooks(request, env) {
 
   await env.DB.batch([
     env.DB.prepare('UPDATE properties SET quickbooks_customer_id = NULL, updated_at = CURRENT_TIMESTAMP WHERE quickbooks_customer_id IS NOT NULL'),
+    env.DB.prepare('DELETE FROM quickbooks_invoices'),
     env.DB.prepare('DELETE FROM quickbooks_customers'),
     env.DB.prepare('DELETE FROM quickbooks_oauth_states'),
     env.DB.prepare('DELETE FROM quickbooks_connections'),

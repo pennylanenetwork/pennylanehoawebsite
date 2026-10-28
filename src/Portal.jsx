@@ -103,6 +103,20 @@ function authError(status) {
   return ''
 }
 
+function invoiceDate(value) {
+  if (!value) return 'No due date'
+  const [year, month, day] = value.split('-').map(Number)
+  return new Intl.DateTimeFormat('en-US', { dateStyle: 'medium' }).format(new Date(year, month - 1, day))
+}
+
+function lindaleDate() {
+  const parts = new Intl.DateTimeFormat('en-US', {
+    timeZone: 'America/Chicago', year: 'numeric', month: '2-digit', day: '2-digit',
+  }).formatToParts(new Date())
+  const values = Object.fromEntries(parts.map((part) => [part.type, part.value]))
+  return `${values.year}-${values.month}-${values.day}`
+}
+
 function ResidentHome({ user, onLogout }) {
   const [tab, setTab] = useState('overview')
   const [data, setData] = useState({
@@ -117,6 +131,8 @@ function ResidentHome({ user, onLogout }) {
     poolAgreements: [],
     boardMembers: [],
     clubhouse: null,
+    duesAccount: null,
+    duesInvoices: [],
   })
   const emptyReservation = {
     eventName: '',
@@ -442,6 +458,21 @@ function ResidentHome({ user, onLogout }) {
               <p>{data.duesAccount ? `Last successfully synchronized ${dateTime(data.duesAccount.syncedAt)}. QuickBooks balances are imported snapshots and may not be real-time.` : 'Your property has not yet been connected to a QuickBooks billing account.'}</p>
               {data.duesAccount?.syncStatus === 'failed' && <p className="dues-sync-warning">The latest refresh was unsuccessful, so this balance may be outdated.</p>}</div>
             <strong>{data.duesAccount ? new Intl.NumberFormat('en-US', { style: 'currency', currency: 'USD' }).format(data.duesAccount.balance) : 'Not available'}</strong>
+          </section>}
+          {user.residentType === 'owner' && data.duesAccount && <section className="invoice-summary" aria-labelledby="open-invoices-title">
+            <header><div><p className="portal-kicker">Billing details</p><h2 id="open-invoices-title">Open invoices</h2></div><span>{data.duesInvoices.length}</span></header>
+            <p className="invoice-disclaimer">These are imported QuickBooks records and may not reflect recent payments. Payments open on an Intuit-hosted page; this website does not collect your card or bank information.</p>
+            <div className="invoice-list">
+              {data.duesInvoices.map((invoice) => {
+                const overdue = invoice.dueDate && invoice.dueDate < lindaleDate()
+                return <article className="invoice-row" key={invoice.id}>
+                  <div className="invoice-identity"><strong>Invoice {invoice.documentNumber || invoice.id}</strong><span className={overdue ? 'is-overdue' : ''}>{overdue ? 'Past due' : 'Open'}</span><small>Issued {invoiceDate(invoice.transactionDate)}{invoice.dueDate ? ` · Due ${invoiceDate(invoice.dueDate)}` : ''}</small></div>
+                  <div className="invoice-amount"><small>Amount remaining</small><strong>{new Intl.NumberFormat('en-US', { style: 'currency', currency: 'USD' }).format(invoice.balance)}</strong><span>of {new Intl.NumberFormat('en-US', { style: 'currency', currency: 'USD' }).format(invoice.totalAmount)}</span></div>
+                  {invoice.invoiceLink ? <a className="primary-button invoice-pay-link" href={invoice.invoiceLink} target="_blank" rel="noreferrer">View and pay in QuickBooks</a> : <span className="invoice-link-unavailable">Payment link unavailable</span>}
+                </article>
+              })}
+              {data.duesInvoices.length === 0 && <p className="empty-state">No open invoices were included in the latest successful synchronization.</p>}
+            </div>
           </section>}
           </>
         )}

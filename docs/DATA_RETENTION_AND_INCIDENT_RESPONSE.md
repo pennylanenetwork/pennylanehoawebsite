@@ -15,7 +15,7 @@ The HOA keeps information only as long as it is reasonably needed to operate the
 | Uploaded documents and photographs | Retained while published or required as an HOA record. Removing a database record must also remove its private R2 object when the application supports deletion. |
 | Login codes and sessions | Login codes expire after 10 minutes. Sessions expire after 7 days. Expired records are removed opportunistically when new codes or sessions are created. |
 | QuickBooks OAuth states | Expire after 10 minutes and are removed during later authorization attempts or when QuickBooks is disconnected. |
-| QuickBooks tokens, imported customers, balances, and property mappings | Retained only while the QuickBooks connection is active. Disconnecting first revokes authorization with Intuit, then deletes the active connection, encrypted tokens, imported data, and mappings. |
+| QuickBooks tokens, imported customers, balances, open invoices, payment links, and property mappings | Retained only while the QuickBooks connection is active. Disconnecting first revokes authorization with Intuit, then deletes the active connection, encrypted tokens, imported data, and mappings. |
 | D1 database backups | Weekly exports in private R2 storage and GitHub Actions artifacts expire after 30 days. The R2 lifecycle rule `Delete database backups after 30 days` must remain enabled. |
 
 Deletion from the active database does not immediately remove a record from an existing encrypted backup. Backup copies age out automatically within 30 days and are used only for disaster recovery. If litigation, a regulatory inquiry, an insurance claim, or another legal hold applies, the board must suspend ordinary deletion for the affected records and document the hold.

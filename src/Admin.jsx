@@ -1781,7 +1781,7 @@ function QuickBooksPanel({ properties }) {
     setSyncing(true); setError(''); setNotice('')
     try {
       const result = await api('/api/admin/quickbooks/sync', { method: 'POST', body: '{}' })
-      setNotice(`${result.synced} QuickBooks customers synchronized.`)
+      setNotice(`${result.synced} QuickBooks customers and ${result.invoices} open invoices synchronized.`)
       await load()
     } catch (requestError) {
       setError(requestError.message)
@@ -1798,7 +1798,7 @@ function QuickBooksPanel({ properties }) {
     } catch (requestError) { setError(requestError.message) }
   }
   async function disconnect() {
-    if (!window.confirm('Disconnect QuickBooks and permanently remove all imported customers, property mappings, and balances from this website?')) return
+    if (!window.confirm('Disconnect QuickBooks and permanently remove all imported customers, property mappings, balances, invoices, and payment links from this website?')) return
     setDisconnecting(true); setError(''); setNotice('')
     try {
       await api('/api/admin/quickbooks', { method: 'DELETE' })
@@ -1827,7 +1827,7 @@ function QuickBooksPanel({ properties }) {
         <div className="quickbooks-sync-result"><strong>{syncStatus === 'failed' ? 'Latest sync failed' : syncStatus === 'success' ? 'Latest sync succeeded' : 'Synchronization pending'}</strong><span>{record.connection.lastSyncAttemptAt ? `Attempted ${dateTime(record.connection.lastSyncAttemptAt)}` : 'Run the first synchronization when ready'}</span></div>
       </div>
       {syncStatus === 'failed' && <p className="quickbooks-sync-error" role="alert">{record.connection.lastSyncError || 'QuickBooks synchronization failed. Try again and review the Worker logs if the problem continues.'}</p>}
-      <p className="form-context">Balances are imported snapshots and may not be real-time. Match each property to one QuickBooks customer; a customer can be linked to only one property.</p>
+      <p className="form-context">Balances and invoices are imported snapshots and may not be real-time. The current snapshot contains {record.invoiceSummary.openInvoiceCount} open invoices totaling {new Intl.NumberFormat('en-US', { style: 'currency', currency: 'USD' }).format(record.invoiceSummary.openInvoiceBalance)}. Match each property to one QuickBooks customer; a customer can be linked to only one property.</p>
       <div className="quickbooks-mappings">
         {properties.map((property) => <label key={property.id}><span>{property.address}{property.residentNames ? <small>{property.residentNames}</small> : null}</span>
           <select value={mapped.get(String(property.id)) || ''} onChange={(event) => map(property.id, event.target.value)}>

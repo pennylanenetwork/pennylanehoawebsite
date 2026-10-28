@@ -20,7 +20,7 @@ See [`DATA_RETENTION_AND_INCIDENT_RESPONSE.md`](DATA_RETENTION_AND_INCIDENT_RESP
 
 ## QuickBooks Online balance integration
 
-The QuickBooks integration is read-only. It imports customer display names, active status, and current balances, then lets a super administrator map one QuickBooks customer to one HOA property. Only active resident accounts marked as property owners can see the balance mapped to their property; renters do not receive it. QuickBooks customer data and property mappings are available only to super administrators.
+The QuickBooks integration is read-only. It imports customer display names, active status, current balances, and open invoices, then lets a super administrator map one QuickBooks customer to one HOA property. Only active resident accounts marked as property owners can see the balance and invoices mapped to their property; renters do not receive them. When QuickBooks supplies an eligible hosted invoice link, the resident can open that Intuit page to review or pay the invoice. QuickBooks customer data and property mappings are available only to super administrators.
 
 The production Worker requires these encrypted Cloudflare secrets:
 
@@ -44,9 +44,9 @@ During testing, `QUICKBOOKS_ENVIRONMENT` is `sandbox` in `wrangler.jsonc` and th
 4. Sign in as an owner for that property and confirm the balance appears on the resident overview.
 5. Sign in as a renter and confirm the balance does not appear.
 
-Synchronization is manual during the initial rollout. Selecting **Sync now** refreshes every imported balance. The administration page records the latest attempt, whether it succeeded or failed, and the last successful synchronization. Residents see the last successful synchronization time and a notice that balances are not real-time. Mapping changes are recorded in the audit log.
+Synchronization is manual during the initial rollout. Selecting **Sync now** refreshes every imported balance and all invoices with a remaining balance. Paid or removed invoices disappear only after a successful synchronization. The administration page records the latest attempt, whether it succeeded or failed, and the last successful synchronization. Residents see the last successful synchronization time and a notice that balances and invoices are not real-time. Mapping changes are recorded in the audit log.
 
-Selecting **Disconnect QuickBooks** requires confirmation and is restricted to super administrators. The Worker first revokes the stored refresh token with Intuit. Only after Intuit confirms revocation does one database batch remove the encrypted OAuth connection, pending OAuth states, imported customers and balances, and every property mapping. The action is recorded in the audit log. If Intuit does not confirm revocation, the local connection and data are retained so an administrator can retry safely.
+Selecting **Disconnect QuickBooks** requires confirmation and is restricted to super administrators. The Worker first revokes the stored refresh token with Intuit. Only after Intuit confirms revocation does one database batch remove the encrypted OAuth connection, pending OAuth states, imported customers, balances, invoices, payment links, and every property mapping. The action is recorded in the audit log. If Intuit does not confirm revocation, the local connection and data are retained so an administrator can retry safely.
 
 Before switching to the live QuickBooks company:
 
