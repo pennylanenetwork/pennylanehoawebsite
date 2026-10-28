@@ -45,6 +45,8 @@ During testing, `QUICKBOOKS_ENVIRONMENT` is `sandbox` in `wrangler.jsonc` and th
 
 Synchronization is manual during the initial rollout. Selecting **Sync now** refreshes every imported balance. Mapping changes are recorded in the audit log.
 
+Selecting **Disconnect QuickBooks** requires confirmation and is restricted to super administrators. The Worker first revokes the stored refresh token with Intuit. Only after Intuit confirms revocation does one database batch remove the encrypted OAuth connection, pending OAuth states, imported customers and balances, and every property mapping. The action is recorded in the audit log. If Intuit does not confirm revocation, the local connection and data are retained so an administrator can retry safely.
+
 Before switching to the live QuickBooks company:
 
 1. Complete Intuit's production app requirements and add the same redirect URI under the Production configuration.

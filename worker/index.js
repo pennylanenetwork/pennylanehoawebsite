@@ -596,6 +596,11 @@ function requireQuickBooksConfig(env) {
   }
 }
 
+function quickBooksAuthorization(env) {
+  requireQuickBooksConfig(env)
+  return `Basic ${bytesToBase64(new TextEncoder().encode(`${env.QUICKBOOKS_CLIENT_ID}:${env.QUICKBOOKS_CLIENT_SECRET}`))}`
+}
+
 async function quickBooksKey(env) {
   requireQuickBooksConfig(env)
   const bytes = base64ToBytes(env.QUICKBOOKS_TOKEN_KEY)
@@ -621,11 +626,9 @@ function quickBooksApiBase(env) {
 }
 
 async function quickBooksTokenRequest(env, parameters) {
-  requireQuickBooksConfig(env)
-  const credentials = bytesToBase64(new TextEncoder().encode(`${env.QUICKBOOKS_CLIENT_ID}:${env.QUICKBOOKS_CLIENT_SECRET}`))
   const response = await fetch('https://oauth.platform.intuit.com/oauth2/v1/tokens/bearer', {
     method: 'POST',
-    headers: { authorization: `Basic ${credentials}`, accept: 'application/json', 'content-type': 'application/x-www-form-urlencoded' },
+    headers: { authorization: quickBooksAuthorization(env), accept: 'application/json', 'content-type': 'application/x-www-form-urlencoded' },
     body: new URLSearchParams(parameters),
   })
   const result = await response.json().catch(() => ({}))
@@ -2905,6 +2908,43 @@ async function syncQuickBooksCustomers(request, env) {
   return json({ synced: customers.length })
 }
 
+async function disconnectQuickBooks(request, env) {
+  const admin = await requireSuperAdmin(request, env)
+  const connection = await env.DB.prepare(`SELECT realm_id, company_name, refresh_token_cipher,
+    refresh_token_iv FROM quickbooks_connections WHERE id = 1`).first()
+  if (!connection) throw new ResponseError('QuickBooks is not connected.', 409)
+
+  const refreshToken = await decryptQuickBooksToken(env, connection.refresh_token_cipher, connection.refresh_token_iv)
+  const response = await fetch('https://developer.api.intuit.com/v2/oauth2/tokens/revoke', {
+    method: 'POST',
+    headers: {
+      authorization: quickBooksAuthorization(env),
+      accept: 'application/json',
+      'content-type': 'application/json',
+    },
+    body: JSON.stringify({ token: refreshToken }),
+  })
+  if (!response.ok) {
+    console.error(JSON.stringify({
+      message: 'QuickBooks token revocation failed',
+      status: response.status,
+      intuitTid: response.headers.get('intuit_tid'),
+    }))
+    throw new ResponseError('QuickBooks could not confirm the disconnection. No local data was removed; try again.', 502)
+  }
+
+  await env.DB.batch([
+    env.DB.prepare('UPDATE properties SET quickbooks_customer_id = NULL, updated_at = CURRENT_TIMESTAMP WHERE quickbooks_customer_id IS NOT NULL'),
+    env.DB.prepare('DELETE FROM quickbooks_customers'),
+    env.DB.prepare('DELETE FROM quickbooks_oauth_states'),
+    env.DB.prepare('DELETE FROM quickbooks_connections'),
+    env.DB.prepare(`INSERT INTO audit_log (actor_user_id, action, target_type, target_id, details_json)
+      VALUES (?1, 'quickbooks.disconnected', 'quickbooks_connection', ?2, ?3)`)
+      .bind(admin.id, connection.realm_id, JSON.stringify({ companyName: connection.company_name || null })),
+  ])
+  return json({ ok: true })
+}
+
 async function mapQuickBooksProperty(request, env, propertyId) {
   const admin = await requireSuperAdmin(request, env)
   const body = await readJson(request)
@@ -2985,6 +3025,7 @@ async function handleApi(request, env) {
   if (request.method === 'GET' && url.pathname === '/api/admin/quickbooks/callback') return finishQuickBooksAuth(request, env)
   if (request.method === 'GET' && url.pathname === '/api/admin/quickbooks') return quickBooksAdminStatus(request, env)
   if (request.method === 'POST' && url.pathname === '/api/admin/quickbooks/sync') return syncQuickBooksCustomers(request, env)
+  if (request.method === 'DELETE' && url.pathname === '/api/admin/quickbooks') return disconnectQuickBooks(request, env)
   if (request.method === 'GET' && url.pathname === '/api/admin/governing-documents') return governingDocuments(request, env, true)
   if (request.method === 'POST' && url.pathname === '/api/admin/properties') return createProperty(request, env)
   if (request.method === 'POST' && url.pathname === '/api/admin/announcements') return createAnnouncement(request, env)

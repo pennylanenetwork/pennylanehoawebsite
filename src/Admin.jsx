@@ -1774,6 +1774,7 @@ function QuickBooksPanel({ properties }) {
   const [error, setError] = useState('')
   const [notice, setNotice] = useState('')
   const [syncing, setSyncing] = useState(false)
+  const [disconnecting, setDisconnecting] = useState(false)
   const load = () => api('/api/admin/quickbooks').then(setRecord).catch((requestError) => setError(requestError.message))
   useEffect(() => { load() }, [])
   async function sync() {
@@ -1793,13 +1794,24 @@ function QuickBooksPanel({ properties }) {
       await load()
     } catch (requestError) { setError(requestError.message) }
   }
+  async function disconnect() {
+    if (!window.confirm('Disconnect QuickBooks and permanently remove all imported customers, property mappings, and balances from this website?')) return
+    setDisconnecting(true); setError(''); setNotice('')
+    try {
+      await api('/api/admin/quickbooks', { method: 'DELETE' })
+      setNotice('QuickBooks was disconnected and all synchronized data was removed.')
+      await load()
+    } catch (requestError) { setError(requestError.message) }
+    finally { setDisconnecting(false) }
+  }
   if (!record) return <p className="empty-state">{error || 'Loading QuickBooks connection...'}</p>
   const mapped = new Map(record.mappings.map((item) => [String(item.propertyId), item.customerId]))
   return <section className="quickbooks-workspace">
     <header className="dashboard-heading">
       <div><p className="portal-kicker">Accounting integration</p><h1>QuickBooks Online</h1><p className="portal-lead">Read-only property balances from the HOA company file.</p></div>
       <div className="dashboard-actions">
-        {record.connection ? <button type="button" className="primary-button" disabled={syncing} onClick={sync}>{syncing ? 'Syncing...' : 'Sync now'}</button>
+        {record.connection ? <><button type="button" className="primary-button" disabled={syncing || disconnecting} onClick={sync}>{syncing ? 'Syncing...' : 'Sync now'}</button>
+          <button type="button" className="row-delete" disabled={syncing || disconnecting} onClick={disconnect}>{disconnecting ? 'Disconnecting...' : 'Disconnect QuickBooks'}</button></>
           : <a className="primary-button" href="/api/admin/quickbooks/start">Connect QuickBooks</a>}
       </div>
     </header>
