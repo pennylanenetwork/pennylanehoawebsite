@@ -76,7 +76,7 @@ After changing GitHub or Cloudflare ownership, confirm both sides:
 
 ## D1 backup and recovery
 
-D1 Time Travel is automatic and requires no scheduled job. Use it for recent point-in-time recovery. The weekly `D1 backup` GitHub workflow runs early Monday morning, exports the complete schema and data to the private R2 prefix `database-backups/`, and retains a GitHub artifact for 30 days. A full D1 export can briefly pause database queries, which is why it is scheduled during low-traffic hours.
+D1 Time Travel is automatic and requires no scheduled job. Use it for recent point-in-time recovery. The weekly `D1 backup` GitHub workflow runs early Monday morning, exports the complete schema and data to the private R2 prefix `database-backups/`, and retains a GitHub artifact for 30 days. The R2 prefix has a Cloudflare lifecycle rule named `Delete database backups after 30 days`; do not remove it without updating the public privacy policy and board retention policy. A full D1 export can briefly pause database queries, which is why it is scheduled during low-traffic hours.
 
 To activate the workflow, add these GitHub Actions repository secrets:
 

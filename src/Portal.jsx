@@ -1447,6 +1447,7 @@ export default function Portal() {
           )}
         </section>
       </main>
+      <nav className="portal-legal-links" aria-label="Policies"><a href="/privacy">Privacy Policy</a><a href="/terms">Terms of Use</a></nav>
     </div>
   )
 }

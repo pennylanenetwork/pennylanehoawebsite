@@ -5,6 +5,7 @@ import Portal, { TurnstileWidget } from './Portal.jsx'
 import { api } from './api.js'
 import { SiteErrorPage } from './ErrorPage.jsx'
 import GoverningDocuments from './GoverningDocuments.jsx'
+import LegalPage from './LegalPage.jsx'
 
 function PublicUpdates() {
   const [content, setContent] = useState(null)
@@ -103,6 +104,8 @@ function App() {
   if (path === '/admin' || path.startsWith('/admin/')) return <Admin />
   if (path === '/portal' || path.startsWith('/portal/')) return <Portal />
   if (path === '/governing-documents') return <GoverningDocuments />
+  if (path === '/privacy') return <LegalPage type="privacy" />
+  if (path === '/terms') return <LegalPage type="terms" />
   if (path !== '/') return <SiteErrorPage />
   return <main>
     <nav className="topbar" aria-label="Main navigation"><a className="public-logo" href="#top" aria-label="Penny Lane HOA home"><img src="/penny-lane-logo.png" alt="Penny Lane" /></a><div className="nav-links"><a href="#updates">Community</a><a href="#quick-links">Quick links</a><a href="#contact">Contact</a></div><a className="nav-button" href="/portal">Resident portal <span aria-hidden="true">&#8599;</span></a></nav>
@@ -112,7 +115,7 @@ function App() {
     <CommunityGallery />
     <CommunityHistory />
     <QuickLinks />
-    <footer id="contact"><div className="footer-heading"><p className="section-label">Keep the conversation going</p><h2>Have a question?<br /><i>We&apos;re nearby.</i></h2><p>Messages are delivered to the HOA board and retained for follow-up.</p></div><div className="footer-contact"><ContactForm /><p className="copyright">&copy; 2026 Penny Lane Estates HOA <span>&bull;</span> Lindale, TX</p></div></footer>
+    <footer id="contact"><div className="footer-heading"><p className="section-label">Keep the conversation going</p><h2>Have a question?<br /><i>We&apos;re nearby.</i></h2><p>Messages are delivered to the HOA board and retained for follow-up.</p></div><div className="footer-contact"><ContactForm /><p className="copyright">&copy; 2026 Penny Lane Estates HOA <span>&bull;</span> Lindale, TX <span>&bull;</span> <a href="/privacy">Privacy</a> <span>&bull;</span> <a href="/terms">Terms</a></p></div></footer>
   </main>
 }
 
