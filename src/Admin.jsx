@@ -81,7 +81,7 @@ async function optimizePhoto(file) {
 }
 
 export default function Admin() {
-  const [tab, setTab] = useState('overview')
+  const [tab, setTab] = useState(() => new URLSearchParams(window.location.search).get('tab') === 'quickbooks' ? 'quickbooks' : 'overview')
   const [user, setUser] = useState(null)
   const [accounts, setAccounts] = useState([])
   const [data, setData] = useState({
@@ -408,7 +408,7 @@ export default function Admin() {
   const canViewReservations = canManageReservations || Boolean(user?.isTreasurer)
   const canViewMessages = fullAdmin || Boolean(user?.isBoardMember) || Boolean(user?.isAccMember) || Boolean(user?.isTreasurer) || Boolean(user?.isAmenitiesCoordinator)
   const tabs = fullAdmin
-    ? ['overview', 'accounts', 'properties', 'access', 'in the know', 'quick links', 'announcements', 'events', 'documents', 'governing documents', 'photos', 'reservations', 'messages']
+    ? ['overview', 'accounts', 'properties', 'access', 'in the know', 'quick links', 'announcements', 'events', 'documents', 'governing documents', 'photos', 'reservations', 'messages', ...(user?.role === 'super_admin' ? ['quickbooks'] : [])]
     : [...(canViewReservations ? ['reservations'] : []), ...(canViewMessages ? ['messages'] : [])]
   const normalizedPropertyQuery = propertyQuery.trim().toLowerCase()
   const visibleProperties = data.properties.filter((property) => `${property.address} ${property.residentNames || ''}`.toLowerCase().includes(normalizedPropertyQuery))
@@ -479,6 +479,7 @@ export default function Admin() {
         )}
 
         {tab === 'overview' && fullAdmin && <AdminOverview accounts={accounts} data={data} onOpen={setTab} />}
+        {tab === 'quickbooks' && user?.role === 'super_admin' && <QuickBooksPanel properties={data.properties} />}
 
         {tab === 'accounts' && (
           <section>
@@ -1768,6 +1769,57 @@ function PhotoEditor({ photo, canMoveUp, canMoveDown, onMoveUp, onMoveDown, onUp
   )
 }
 
+function QuickBooksPanel({ properties }) {
+  const [record, setRecord] = useState(null)
+  const [error, setError] = useState('')
+  const [notice, setNotice] = useState('')
+  const [syncing, setSyncing] = useState(false)
+  const load = () => api('/api/admin/quickbooks').then(setRecord).catch((requestError) => setError(requestError.message))
+  useEffect(() => { load() }, [])
+  async function sync() {
+    setSyncing(true); setError(''); setNotice('')
+    try {
+      const result = await api('/api/admin/quickbooks/sync', { method: 'POST', body: '{}' })
+      setNotice(`${result.synced} QuickBooks customers synchronized.`)
+      await load()
+    } catch (requestError) { setError(requestError.message) }
+    finally { setSyncing(false) }
+  }
+  async function map(propertyId, customerId) {
+    setError(''); setNotice('')
+    try {
+      await api(`/api/admin/properties/${propertyId}/quickbooks`, { method: 'PATCH', body: JSON.stringify({ customerId }) })
+      setNotice('Property billing account updated.')
+      await load()
+    } catch (requestError) { setError(requestError.message) }
+  }
+  if (!record) return <p className="empty-state">{error || 'Loading QuickBooks connection...'}</p>
+  const mapped = new Map(record.mappings.map((item) => [String(item.propertyId), item.customerId]))
+  return <section className="quickbooks-workspace">
+    <header className="dashboard-heading">
+      <div><p className="portal-kicker">Accounting integration</p><h1>QuickBooks Online</h1><p className="portal-lead">Read-only property balances from the HOA company file.</p></div>
+      <div className="dashboard-actions">
+        {record.connection ? <button type="button" className="primary-button" disabled={syncing} onClick={sync}>{syncing ? 'Syncing...' : 'Sync now'}</button>
+          : <a className="primary-button" href="/api/admin/quickbooks/start">Connect QuickBooks</a>}
+      </div>
+    </header>
+    {notice && <p className="form-notice" role="status">{notice}</p>}
+    {error && <p className="form-error" role="alert">{error}</p>}
+    {record.connection ? <>
+      <div className="quickbooks-status"><strong>{record.connection.companyName || 'Connected QuickBooks company'}</strong><span>{record.connection.lastSyncedAt ? `Last synced ${dateTime(record.connection.lastSyncedAt)}` : 'Not synced yet'}</span></div>
+      <p className="form-context">Match each property to one QuickBooks customer. A QuickBooks customer can be linked to only one property.</p>
+      <div className="quickbooks-mappings">
+        {properties.map((property) => <label key={property.id}><span>{property.address}{property.residentNames ? <small>{property.residentNames}</small> : null}</span>
+          <select value={mapped.get(String(property.id)) || ''} onChange={(event) => map(property.id, event.target.value)}>
+            <option value="">Not linked</option>
+            {record.customers.map((customer) => <option value={customer.id} key={customer.id}>{customer.displayName} — {new Intl.NumberFormat('en-US', { style: 'currency', currency: 'USD' }).format(customer.balance)}</option>)}
+          </select>
+        </label>)}
+      </div>
+    </> : <p className="empty-state">Connect the QuickBooks sandbox company, then synchronize its customer list.</p>}
+  </section>
+}
+
 function PropertyDetail({ propertyId, onBack, isSuperAdmin, onUpdated }) {
   const [record, setRecord] = useState(null)
   const [error, setError] = useState('')
@@ -1896,6 +1948,9 @@ function PropertyDetail({ propertyId, onBack, isSuperAdmin, onUpdated }) {
         </span>
         <span>
           <strong>{reservations.length}</strong> reservations
+        </span>
+        <span>
+          <strong>{property.quickBooksCustomerId ? new Intl.NumberFormat('en-US', { style: 'currency', currency: 'USD' }).format(property.quickBooksBalance || 0) : 'Not linked'}</strong> HOA balance
         </span>
       </div>
       <PoolCardManager cards={poolCards} residents={residents} onAdd={addPoolCard} onUpdate={updatePoolCard} />

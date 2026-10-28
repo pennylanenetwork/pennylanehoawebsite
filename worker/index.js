@@ -587,6 +587,100 @@ async function requireSuperAdmin(request, env) {
   return user
 }
 
+const QUICKBOOKS_REDIRECT_URI = 'https://pennylanehoa.net/api/admin/quickbooks/callback'
+const QUICKBOOKS_SCOPE = 'com.intuit.quickbooks.accounting'
+
+function requireQuickBooksConfig(env) {
+  if (!env.QUICKBOOKS_CLIENT_ID || !env.QUICKBOOKS_CLIENT_SECRET || !env.QUICKBOOKS_TOKEN_KEY) {
+    throw new ResponseError('QuickBooks credentials have not been configured.', 503)
+  }
+}
+
+async function quickBooksKey(env) {
+  requireQuickBooksConfig(env)
+  const bytes = base64ToBytes(env.QUICKBOOKS_TOKEN_KEY)
+  if (bytes.length !== 32) throw new ResponseError('QuickBooks token encryption is not configured correctly.', 503)
+  return crypto.subtle.importKey('raw', bytes, 'AES-GCM', false, ['encrypt', 'decrypt'])
+}
+
+async function encryptQuickBooksToken(env, value) {
+  const iv = crypto.getRandomValues(new Uint8Array(12))
+  const cipher = await crypto.subtle.encrypt({ name: 'AES-GCM', iv }, await quickBooksKey(env), new TextEncoder().encode(value))
+  return { cipher: bytesToBase64(new Uint8Array(cipher)), iv: bytesToBase64(iv) }
+}
+
+async function decryptQuickBooksToken(env, cipher, iv) {
+  const value = await crypto.subtle.decrypt({ name: 'AES-GCM', iv: base64ToBytes(iv) }, await quickBooksKey(env), base64ToBytes(cipher))
+  return new TextDecoder().decode(value)
+}
+
+function quickBooksApiBase(env) {
+  return env.QUICKBOOKS_ENVIRONMENT === 'production'
+    ? 'https://quickbooks.api.intuit.com'
+    : 'https://sandbox-quickbooks.api.intuit.com'
+}
+
+async function quickBooksTokenRequest(env, parameters) {
+  requireQuickBooksConfig(env)
+  const credentials = bytesToBase64(new TextEncoder().encode(`${env.QUICKBOOKS_CLIENT_ID}:${env.QUICKBOOKS_CLIENT_SECRET}`))
+  const response = await fetch('https://oauth.platform.intuit.com/oauth2/v1/tokens/bearer', {
+    method: 'POST',
+    headers: { authorization: `Basic ${credentials}`, accept: 'application/json', 'content-type': 'application/x-www-form-urlencoded' },
+    body: new URLSearchParams(parameters),
+  })
+  const result = await response.json().catch(() => ({}))
+  if (!response.ok || !result.access_token || !result.refresh_token) {
+    console.error(JSON.stringify({ message: 'QuickBooks token request failed', status: response.status, error: result.error }))
+    throw new ResponseError('QuickBooks authorization failed.', 502)
+  }
+  return result
+}
+
+async function saveQuickBooksConnection(env, adminId, realmId, tokens, companyName = null) {
+  const access = await encryptQuickBooksToken(env, tokens.access_token)
+  const refresh = await encryptQuickBooksToken(env, tokens.refresh_token)
+  const accessExpiresAt = new Date(Date.now() + Number(tokens.expires_in || 3600) * 1000).toISOString()
+  const refreshExpiresAt = tokens.x_refresh_token_expires_in
+    ? new Date(Date.now() + Number(tokens.x_refresh_token_expires_in) * 1000).toISOString() : null
+  await env.DB.prepare(`INSERT INTO quickbooks_connections (id, realm_id, company_name, access_token_cipher,
+    access_token_iv, refresh_token_cipher, refresh_token_iv, access_token_expires_at,
+    refresh_token_expires_at, connected_by) VALUES (1, ?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9)
+    ON CONFLICT (id) DO UPDATE SET realm_id = excluded.realm_id,
+      company_name = COALESCE(excluded.company_name, quickbooks_connections.company_name),
+      access_token_cipher = excluded.access_token_cipher, access_token_iv = excluded.access_token_iv,
+      refresh_token_cipher = excluded.refresh_token_cipher, refresh_token_iv = excluded.refresh_token_iv,
+      access_token_expires_at = excluded.access_token_expires_at,
+      refresh_token_expires_at = excluded.refresh_token_expires_at,
+      connected_by = excluded.connected_by, updated_at = CURRENT_TIMESTAMP`)
+    .bind(realmId, companyName, access.cipher, access.iv, refresh.cipher, refresh.iv,
+      accessExpiresAt, refreshExpiresAt, adminId).run()
+}
+
+async function quickBooksAccess(env) {
+  const connection = await env.DB.prepare('SELECT * FROM quickbooks_connections WHERE id = 1').first()
+  if (!connection) throw new ResponseError('QuickBooks is not connected.', 409)
+  if (new Date(connection.access_token_expires_at).getTime() > Date.now() + 60000) {
+    return { connection, accessToken: await decryptQuickBooksToken(env, connection.access_token_cipher, connection.access_token_iv) }
+  }
+  const refreshToken = await decryptQuickBooksToken(env, connection.refresh_token_cipher, connection.refresh_token_iv)
+  const tokens = await quickBooksTokenRequest(env, { grant_type: 'refresh_token', refresh_token: refreshToken })
+  await saveQuickBooksConnection(env, connection.connected_by, connection.realm_id, tokens, connection.company_name)
+  return quickBooksAccess(env)
+}
+
+async function quickBooksFetch(env, path) {
+  const { connection, accessToken } = await quickBooksAccess(env)
+  const response = await fetch(`${quickBooksApiBase(env)}${path.replace('{realmId}', encodeURIComponent(connection.realm_id))}`, {
+    headers: { authorization: `Bearer ${accessToken}`, accept: 'application/json' },
+  })
+  const result = await response.json().catch(() => ({}))
+  if (!response.ok) {
+    console.error(JSON.stringify({ message: 'QuickBooks API request failed', status: response.status, fault: result.Fault?.Error?.[0]?.code }))
+    throw new ResponseError('QuickBooks could not provide account information.', 502)
+  }
+  return result
+}
+
 export function canAccessMessage(user, category) {
   return user.role === 'super_admin'
     || (['general', 'maintenance', 'board'].includes(category) && Boolean(user.isBoardMember))
@@ -754,7 +848,7 @@ async function clubhouseAvailability(env, startsAt, endsAt, excludeReservationId
 
 async function portalDashboard(request, env) {
   const user = await requireUser(request, env)
-  const [announcements, events, documents, reservations, messages, messageReplies, guests, household, poolCards, poolAgreements, boardMembers, clubhouse] = await env.DB.batch([
+  const [announcements, events, documents, reservations, messages, messageReplies, guests, household, poolCards, poolAgreements, boardMembers, clubhouse, duesAccount] = await env.DB.batch([
     env.DB.prepare(`SELECT id, title, body, audience, published_at AS publishedAt FROM announcements
       WHERE published_at <= CURRENT_TIMESTAMP ORDER BY published_at DESC LIMIT 20`),
     env.DB.prepare(`SELECT id,
@@ -817,6 +911,11 @@ async function portalDashboard(request, env) {
         WHEN is_secretary = 1 THEN 3 WHEN is_treasurer = 1 THEN 4 ELSE 5 END, last_name, first_name`),
     env.DB.prepare(`SELECT opens_at AS opensAt, closes_at AS closesAt,
       cleanup_buffer_minutes AS cleanupBufferMinutes FROM clubhouse_settings WHERE id = 1`),
+    env.DB.prepare(`SELECT quickbooks_customers.display_name AS customerName,
+      quickbooks_customers.balance, quickbooks_customers.synced_at AS syncedAt
+      FROM properties INNER JOIN quickbooks_customers
+        ON quickbooks_customers.id = properties.quickbooks_customer_id
+      WHERE properties.id = ?1 AND ?2 = 'owner'`).bind(user.propertyId, user.residentType),
   ])
   const repliesByMessage = messageReplies.results.reduce((result, reply) => {
     if (!result[reply.messageId]) result[reply.messageId] = []
@@ -835,6 +934,7 @@ async function portalDashboard(request, env) {
     poolAgreements: poolAgreements.results,
     boardMembers: boardMembers.results,
     clubhouse: clubhouse.results[0],
+    duesAccount: duesAccount.results[0] || null,
   })
 }
 
@@ -1839,8 +1939,14 @@ async function propertyDetails(request, env, propertyId) {
   const property = await env.DB.prepare(`SELECT properties.id,
     properties.street_number || ' ' || properties.street_name || ' ' || properties.street_suffix AS address,
     properties.city, properties.state, properties.postal_code AS postalCode, properties.status,
-    hoa_phases.name AS phase, properties.created_at AS createdAt
-    FROM properties INNER JOIN hoa_phases ON hoa_phases.id = properties.phase_id WHERE properties.id = ?1`)
+    hoa_phases.name AS phase, properties.created_at AS createdAt,
+    properties.quickbooks_customer_id AS quickBooksCustomerId,
+    quickbooks_customers.display_name AS quickBooksCustomerName,
+    quickbooks_customers.balance AS quickBooksBalance,
+    quickbooks_customers.synced_at AS quickBooksSyncedAt
+    FROM properties INNER JOIN hoa_phases ON hoa_phases.id = properties.phase_id
+    LEFT JOIN quickbooks_customers ON quickbooks_customers.id = properties.quickbooks_customer_id
+    WHERE properties.id = ?1`)
     .bind(propertyId).first()
   if (!property) throw new ResponseError('Property not found.', 404)
   const [residents, reservations, contacts, communications, poolCards, guests, poolAgreements, audit] = await env.DB.batch([
@@ -2726,6 +2832,102 @@ async function exportPoolCardsCsv(request, env) {
       item.notes, item.issuedAt, item.updatedAt])], 'penny-lane-pool-cards.csv')
 }
 
+async function startQuickBooksAuth(request, env) {
+  const admin = await requireSuperAdmin(request, env)
+  requireQuickBooksConfig(env)
+  const state = randomToken()
+  await env.DB.prepare('DELETE FROM quickbooks_oauth_states WHERE expires_at <= CURRENT_TIMESTAMP').run()
+  await env.DB.prepare(`INSERT INTO quickbooks_oauth_states (state_hash, user_id, expires_at)
+    VALUES (?1, ?2, datetime('now', '+10 minutes'))`).bind(await sha256(state), admin.id).run()
+  const url = new URL('https://appcenter.intuit.com/connect/oauth2')
+  url.searchParams.set('client_id', env.QUICKBOOKS_CLIENT_ID)
+  url.searchParams.set('response_type', 'code')
+  url.searchParams.set('scope', QUICKBOOKS_SCOPE)
+  url.searchParams.set('redirect_uri', QUICKBOOKS_REDIRECT_URI)
+  url.searchParams.set('state', state)
+  return Response.redirect(url.toString(), 302)
+}
+
+async function finishQuickBooksAuth(request, env) {
+  const admin = await requireSuperAdmin(request, env)
+  const url = new URL(request.url)
+  if (url.searchParams.get('error')) return Response.redirect('/admin?tab=quickbooks&quickbooks=denied', 302)
+  const code = url.searchParams.get('code')
+  const realmId = url.searchParams.get('realmId')
+  const state = url.searchParams.get('state')
+  if (!code || !realmId || !state) throw new ResponseError('QuickBooks returned an incomplete authorization.', 400)
+  const stateHash = await sha256(state)
+  const saved = await env.DB.prepare(`DELETE FROM quickbooks_oauth_states
+    WHERE state_hash = ?1 AND user_id = ?2 AND expires_at > CURRENT_TIMESTAMP RETURNING user_id`)
+    .bind(stateHash, admin.id).first()
+  if (!saved) throw new ResponseError('QuickBooks authorization expired. Start the connection again.', 400)
+  const tokens = await quickBooksTokenRequest(env, {
+    grant_type: 'authorization_code', code, redirect_uri: QUICKBOOKS_REDIRECT_URI,
+  })
+  await saveQuickBooksConnection(env, admin.id, realmId, tokens)
+  try {
+    const company = await quickBooksFetch(env, `/v3/company/{realmId}/companyinfo/${encodeURIComponent(realmId)}`)
+    const name = company.CompanyInfo?.CompanyName || company.CompanyInfo?.LegalName || null
+    if (name) await env.DB.prepare('UPDATE quickbooks_connections SET company_name = ?1 WHERE id = 1').bind(name).run()
+  } catch (error) {
+    console.error('QuickBooks company name lookup failed', error)
+  }
+  return Response.redirect('/admin?tab=quickbooks&quickbooks=connected', 302)
+}
+
+async function quickBooksAdminStatus(request, env) {
+  await requireSuperAdmin(request, env)
+  const [connection, customers, mappings] = await env.DB.batch([
+    env.DB.prepare(`SELECT realm_id AS realmId, company_name AS companyName,
+      last_synced_at AS lastSyncedAt, updated_at AS updatedAt FROM quickbooks_connections WHERE id = 1`),
+    env.DB.prepare(`SELECT id, display_name AS displayName, balance, active, synced_at AS syncedAt
+      FROM quickbooks_customers ORDER BY display_name`),
+    env.DB.prepare(`SELECT properties.id AS propertyId,
+      properties.street_number || ' ' || properties.street_name || ' ' || properties.street_suffix AS address,
+      properties.quickbooks_customer_id AS customerId FROM properties
+      WHERE properties.quickbooks_customer_id IS NOT NULL ORDER BY properties.street_name, properties.street_number`),
+  ])
+  return json({ connection: connection.results[0] || null, customers: customers.results, mappings: mappings.results })
+}
+
+async function syncQuickBooksCustomers(request, env) {
+  await requireSuperAdmin(request, env)
+  const query = encodeURIComponent('select * from Customer startposition 1 maxresults 1000')
+  const result = await quickBooksFetch(env, `/v3/company/{realmId}/query?query=${query}`)
+  const customers = result.QueryResponse?.Customer || []
+  const statements = customers.map((customer) => env.DB.prepare(`INSERT INTO quickbooks_customers
+    (id, display_name, balance, active, synced_at) VALUES (?1, ?2, ?3, ?4, CURRENT_TIMESTAMP)
+    ON CONFLICT (id) DO UPDATE SET display_name = excluded.display_name, balance = excluded.balance,
+      active = excluded.active, synced_at = CURRENT_TIMESTAMP`)
+    .bind(String(customer.Id), String(customer.DisplayName || `Customer ${customer.Id}`), Number(customer.Balance || 0), customer.Active === false ? 0 : 1))
+  if (statements.length) await env.DB.batch(statements)
+  await env.DB.prepare('UPDATE quickbooks_connections SET last_synced_at = CURRENT_TIMESTAMP, updated_at = CURRENT_TIMESTAMP WHERE id = 1').run()
+  return json({ synced: customers.length })
+}
+
+async function mapQuickBooksProperty(request, env, propertyId) {
+  const admin = await requireSuperAdmin(request, env)
+  const body = await readJson(request)
+  const customerId = cleanText(body.customerId, 100)
+  if (customerId) {
+    const customer = await env.DB.prepare('SELECT id FROM quickbooks_customers WHERE id = ?1').bind(customerId).first()
+    if (!customer) throw new ResponseError('Select a QuickBooks customer from the imported list.', 400)
+  }
+  let result
+  try {
+    result = await env.DB.prepare(`UPDATE properties SET quickbooks_customer_id = ?1,
+      updated_at = CURRENT_TIMESTAMP WHERE id = ?2`).bind(customerId || null, propertyId).run()
+  } catch (error) {
+    if (String(error).includes('UNIQUE')) throw new ResponseError('That QuickBooks customer is already linked to another property.', 409)
+    throw error
+  }
+  if (!result.meta.changes) throw new ResponseError('Property not found.', 404)
+  await env.DB.prepare(`INSERT INTO audit_log (actor_user_id, action, target_type, target_id, details_json)
+    VALUES (?1, 'property.quickbooks_customer_updated', 'property', ?2, ?3)`)
+    .bind(admin.id, propertyId, JSON.stringify({ customerId: customerId || null })).run()
+  return json({ ok: true })
+}
+
 async function handleApi(request, env) {
   const url = new URL(request.url)
   if (!url.pathname.startsWith('/api/')) return env.ASSETS.fetch(request)
@@ -2779,6 +2981,10 @@ async function handleApi(request, env) {
   if (request.method === 'GET' && url.pathname === '/api/admin/guests.csv') return exportGuestsCsv(request, env)
   if (request.method === 'GET' && url.pathname === '/api/admin/pool-cards.csv') return exportPoolCardsCsv(request, env)
   if (request.method === 'GET' && url.pathname === '/api/admin/dashboard') return adminDashboard(request, env)
+  if (request.method === 'GET' && url.pathname === '/api/admin/quickbooks/start') return startQuickBooksAuth(request, env)
+  if (request.method === 'GET' && url.pathname === '/api/admin/quickbooks/callback') return finishQuickBooksAuth(request, env)
+  if (request.method === 'GET' && url.pathname === '/api/admin/quickbooks') return quickBooksAdminStatus(request, env)
+  if (request.method === 'POST' && url.pathname === '/api/admin/quickbooks/sync') return syncQuickBooksCustomers(request, env)
   if (request.method === 'GET' && url.pathname === '/api/admin/governing-documents') return governingDocuments(request, env, true)
   if (request.method === 'POST' && url.pathname === '/api/admin/properties') return createProperty(request, env)
   if (request.method === 'POST' && url.pathname === '/api/admin/announcements') return createAnnouncement(request, env)
@@ -2797,6 +3003,8 @@ async function handleApi(request, env) {
   if (blackoutMatch && request.method === 'DELETE') return deleteClubhouseBlackout(request, env, blackoutMatch[1])
   const propertyPoolCardsMatch = url.pathname.match(/^\/api\/admin\/properties\/([^/]+)\/pool-cards$/)
   if (propertyPoolCardsMatch && request.method === 'POST') return createPoolCard(request, env, propertyPoolCardsMatch[1])
+  const propertyQuickBooksMatch = url.pathname.match(/^\/api\/admin\/properties\/([^/]+)\/quickbooks$/)
+  if (propertyQuickBooksMatch && request.method === 'PATCH') return mapQuickBooksProperty(request, env, propertyQuickBooksMatch[1])
   const poolCardMatch = url.pathname.match(/^\/api\/admin\/pool-cards\/([^/]+)$/)
   if (poolCardMatch && request.method === 'PATCH') return updatePoolCard(request, env, poolCardMatch[1])
   const adminGalleryImageMatch = url.pathname.match(/^\/api\/admin\/gallery\/([^/]+)\/image$/)

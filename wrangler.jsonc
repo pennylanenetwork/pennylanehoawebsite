@@ -47,5 +47,8 @@
   ],
   "observability": {
     "enabled": true
+  },
+  "vars": {
+    "QUICKBOOKS_ENVIRONMENT": "sandbox"
   }
 }

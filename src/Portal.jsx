@@ -401,7 +401,7 @@ function ResidentHome({ user, onLogout }) {
           </p>
         )}
         {tab === 'overview' && (
-          <div className="dashboard-columns">
+          <><div className="dashboard-columns">
             <section>
               <h2>Announcements</h2>
               {data.announcements.map((item) => (
@@ -437,6 +437,12 @@ function ResidentHome({ user, onLogout }) {
               {data.boardMembers.length === 0 && <p className="empty-state">The active board roster has not been published.</p>}
             </section>
           </div>
+          {user.residentType === 'owner' && <section className="dues-summary" aria-labelledby="dues-summary-title">
+            <div><p className="portal-kicker">QuickBooks Online</p><h2 id="dues-summary-title">HOA account balance</h2>
+              <p>{data.duesAccount ? `Balance last synchronized ${dateTime(data.duesAccount.syncedAt)}.` : 'Your property has not yet been connected to a QuickBooks billing account.'}</p></div>
+            <strong>{data.duesAccount ? new Intl.NumberFormat('en-US', { style: 'currency', currency: 'USD' }).format(data.duesAccount.balance) : 'Not available'}</strong>
+          </section>}
+          </>
         )}
         {tab === 'calendar' && <CalendarView events={data.events} />}
         {tab === 'documents' && (

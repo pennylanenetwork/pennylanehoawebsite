@@ -17,6 +17,42 @@ Do not put API tokens, OAuth secrets, Stripe keys, email credentials, or recover
 
 See [`ROLES_AND_NOTIFICATIONS.md`](ROLES_AND_NOTIFICATIONS.md) for the current email-routing and administration-permission matrix.
 
+## QuickBooks Online balance integration
+
+The QuickBooks integration is read-only. It imports customer display names, active status, and current balances, then lets a super administrator map one QuickBooks customer to one HOA property. Only active resident accounts marked as property owners can see the balance mapped to their property; renters do not receive it. QuickBooks customer data and property mappings are available only to super administrators.
+
+The production Worker requires these encrypted Cloudflare secrets:
+
+- `QUICKBOOKS_CLIENT_ID`
+- `QUICKBOOKS_CLIENT_SECRET`
+- `QUICKBOOKS_TOKEN_KEY` (a base64-encoded 32-byte AES key)
+
+Never rotate `QUICKBOOKS_TOKEN_KEY` while an OAuth connection is stored. Rotating it makes the stored access and refresh tokens unreadable; reconnect QuickBooks immediately if a rotation is required.
+
+The Intuit app redirect URI must exactly match:
+
+```text
+https://pennylanehoa.net/api/admin/quickbooks/callback
+```
+
+During testing, `QUICKBOOKS_ENVIRONMENT` is `sandbox` in `wrangler.jsonc` and the Intuit Development credentials must be installed as Worker secrets. A super administrator completes setup from **Administration > QuickBooks**:
+
+1. Select **Connect QuickBooks** and authorize the Intuit sandbox company.
+2. Select **Sync now** to import the customer list and balances.
+3. Match a test property to its QuickBooks customer.
+4. Sign in as an owner for that property and confirm the balance appears on the resident overview.
+5. Sign in as a renter and confirm the balance does not appear.
+
+Synchronization is manual during the initial rollout. Selecting **Sync now** refreshes every imported balance. Mapping changes are recorded in the audit log.
+
+Before switching to the live QuickBooks company:
+
+1. Complete Intuit's production app requirements and add the same redirect URI under the Production configuration.
+2. Replace the two QuickBooks Worker secrets with the Production Client ID and Client Secret.
+3. Change `QUICKBOOKS_ENVIRONMENT` in `wrangler.jsonc` from `sandbox` to `production` and deploy.
+4. Connect the live HOA company, synchronize, and verify one mapping before mapping the remaining properties.
+5. Confirm balances with the treasurer before announcing resident access.
+
 ## Deployment ownership and verification
 
 Cloudflare Workers Builds is expected to deploy every push to `main`. Manual deployments use the same Worker configuration through `npm run cf:deploy`.
