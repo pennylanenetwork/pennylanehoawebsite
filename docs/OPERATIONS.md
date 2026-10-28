@@ -16,6 +16,7 @@
 Do not put API tokens, OAuth secrets, Stripe keys, email credentials, or recovery codes in this repository.
 
 See [`ROLES_AND_NOTIFICATIONS.md`](ROLES_AND_NOTIFICATIONS.md) for the current email-routing and administration-permission matrix.
+See [`DATA_RETENTION_AND_INCIDENT_RESPONSE.md`](DATA_RETENTION_AND_INCIDENT_RESPONSE.md) for the board's retention schedule, legal-hold rule, and incident procedure.
 
 ## QuickBooks Online balance integration
 
@@ -43,7 +44,7 @@ During testing, `QUICKBOOKS_ENVIRONMENT` is `sandbox` in `wrangler.jsonc` and th
 4. Sign in as an owner for that property and confirm the balance appears on the resident overview.
 5. Sign in as a renter and confirm the balance does not appear.
 
-Synchronization is manual during the initial rollout. Selecting **Sync now** refreshes every imported balance. Mapping changes are recorded in the audit log.
+Synchronization is manual during the initial rollout. Selecting **Sync now** refreshes every imported balance. The administration page records the latest attempt, whether it succeeded or failed, and the last successful synchronization. Residents see the last successful synchronization time and a notice that balances are not real-time. Mapping changes are recorded in the audit log.
 
 Selecting **Disconnect QuickBooks** requires confirmation and is restricted to super administrators. The Worker first revokes the stored refresh token with Intuit. Only after Intuit confirms revocation does one database batch remove the encrypted OAuth connection, pending OAuth states, imported customers and balances, and every property mapping. The action is recorded in the audit log. If Intuit does not confirm revocation, the local connection and data are retained so an administrator can retry safely.
 

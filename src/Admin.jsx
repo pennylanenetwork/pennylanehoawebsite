@@ -1783,7 +1783,10 @@ function QuickBooksPanel({ properties }) {
       const result = await api('/api/admin/quickbooks/sync', { method: 'POST', body: '{}' })
       setNotice(`${result.synced} QuickBooks customers synchronized.`)
       await load()
-    } catch (requestError) { setError(requestError.message) }
+    } catch (requestError) {
+      setError(requestError.message)
+      await load()
+    }
     finally { setSyncing(false) }
   }
   async function map(propertyId, customerId) {
@@ -1806,6 +1809,7 @@ function QuickBooksPanel({ properties }) {
   }
   if (!record) return <p className="empty-state">{error || 'Loading QuickBooks connection...'}</p>
   const mapped = new Map(record.mappings.map((item) => [String(item.propertyId), item.customerId]))
+  const syncStatus = record.connection?.lastSyncStatus || 'never'
   return <section className="quickbooks-workspace">
     <header className="dashboard-heading">
       <div><p className="portal-kicker">Accounting integration</p><h1>QuickBooks Online</h1><p className="portal-lead">Read-only property balances from the HOA company file.</p></div>
@@ -1818,8 +1822,12 @@ function QuickBooksPanel({ properties }) {
     {notice && <p className="form-notice" role="status">{notice}</p>}
     {error && <p className="form-error" role="alert">{error}</p>}
     {record.connection ? <>
-      <div className="quickbooks-status"><strong>{record.connection.companyName || 'Connected QuickBooks company'}</strong><span>{record.connection.lastSyncedAt ? `Last synced ${dateTime(record.connection.lastSyncedAt)}` : 'Not synced yet'}</span></div>
-      <p className="form-context">Match each property to one QuickBooks customer. A QuickBooks customer can be linked to only one property.</p>
+      <div className={`quickbooks-status is-${syncStatus}`}>
+        <div><strong>{record.connection.companyName || 'Connected QuickBooks company'}</strong><span>{record.connection.lastSyncedAt ? `Last successful sync ${dateTime(record.connection.lastSyncedAt)}` : 'No successful synchronization yet'}</span></div>
+        <div className="quickbooks-sync-result"><strong>{syncStatus === 'failed' ? 'Latest sync failed' : syncStatus === 'success' ? 'Latest sync succeeded' : 'Synchronization pending'}</strong><span>{record.connection.lastSyncAttemptAt ? `Attempted ${dateTime(record.connection.lastSyncAttemptAt)}` : 'Run the first synchronization when ready'}</span></div>
+      </div>
+      {syncStatus === 'failed' && <p className="quickbooks-sync-error" role="alert">{record.connection.lastSyncError || 'QuickBooks synchronization failed. Try again and review the Worker logs if the problem continues.'}</p>}
+      <p className="form-context">Balances are imported snapshots and may not be real-time. Match each property to one QuickBooks customer; a customer can be linked to only one property.</p>
       <div className="quickbooks-mappings">
         {properties.map((property) => <label key={property.id}><span>{property.address}{property.residentNames ? <small>{property.residentNames}</small> : null}</span>
           <select value={mapped.get(String(property.id)) || ''} onChange={(event) => map(property.id, event.target.value)}>

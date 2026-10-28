@@ -915,9 +915,11 @@ async function portalDashboard(request, env) {
     env.DB.prepare(`SELECT opens_at AS opensAt, closes_at AS closesAt,
       cleanup_buffer_minutes AS cleanupBufferMinutes FROM clubhouse_settings WHERE id = 1`),
     env.DB.prepare(`SELECT quickbooks_customers.display_name AS customerName,
-      quickbooks_customers.balance, quickbooks_customers.synced_at AS syncedAt
+      quickbooks_customers.balance, quickbooks_connections.last_synced_at AS syncedAt,
+      quickbooks_connections.last_sync_status AS syncStatus
       FROM properties INNER JOIN quickbooks_customers
         ON quickbooks_customers.id = properties.quickbooks_customer_id
+      INNER JOIN quickbooks_connections ON quickbooks_connections.id = 1
       WHERE properties.id = ?1 AND ?2 = 'owner'`).bind(user.propertyId, user.residentType),
   ])
   const repliesByMessage = messageReplies.results.reduce((result, reply) => {
@@ -2882,7 +2884,9 @@ async function quickBooksAdminStatus(request, env) {
   await requireSuperAdmin(request, env)
   const [connection, customers, mappings] = await env.DB.batch([
     env.DB.prepare(`SELECT realm_id AS realmId, company_name AS companyName,
-      last_synced_at AS lastSyncedAt, updated_at AS updatedAt FROM quickbooks_connections WHERE id = 1`),
+      last_synced_at AS lastSyncedAt, last_sync_attempt_at AS lastSyncAttemptAt,
+      last_sync_status AS lastSyncStatus, last_sync_error AS lastSyncError,
+      updated_at AS updatedAt FROM quickbooks_connections WHERE id = 1`),
     env.DB.prepare(`SELECT id, display_name AS displayName, balance, active, synced_at AS syncedAt
       FROM quickbooks_customers ORDER BY display_name`),
     env.DB.prepare(`SELECT properties.id AS propertyId,
@@ -2895,17 +2899,27 @@ async function quickBooksAdminStatus(request, env) {
 
 async function syncQuickBooksCustomers(request, env) {
   await requireSuperAdmin(request, env)
-  const query = encodeURIComponent('select * from Customer startposition 1 maxresults 1000')
-  const result = await quickBooksFetch(env, `/v3/company/{realmId}/query?query=${query}`)
-  const customers = result.QueryResponse?.Customer || []
-  const statements = customers.map((customer) => env.DB.prepare(`INSERT INTO quickbooks_customers
-    (id, display_name, balance, active, synced_at) VALUES (?1, ?2, ?3, ?4, CURRENT_TIMESTAMP)
-    ON CONFLICT (id) DO UPDATE SET display_name = excluded.display_name, balance = excluded.balance,
-      active = excluded.active, synced_at = CURRENT_TIMESTAMP`)
-    .bind(String(customer.Id), String(customer.DisplayName || `Customer ${customer.Id}`), Number(customer.Balance || 0), customer.Active === false ? 0 : 1))
-  if (statements.length) await env.DB.batch(statements)
-  await env.DB.prepare('UPDATE quickbooks_connections SET last_synced_at = CURRENT_TIMESTAMP, updated_at = CURRENT_TIMESTAMP WHERE id = 1').run()
-  return json({ synced: customers.length })
+  try {
+    const query = encodeURIComponent('select * from Customer startposition 1 maxresults 1000')
+    const result = await quickBooksFetch(env, `/v3/company/{realmId}/query?query=${query}`)
+    const customers = result.QueryResponse?.Customer || []
+    const statements = customers.map((customer) => env.DB.prepare(`INSERT INTO quickbooks_customers
+      (id, display_name, balance, active, synced_at) VALUES (?1, ?2, ?3, ?4, CURRENT_TIMESTAMP)
+      ON CONFLICT (id) DO UPDATE SET display_name = excluded.display_name, balance = excluded.balance,
+        active = excluded.active, synced_at = CURRENT_TIMESTAMP`)
+      .bind(String(customer.Id), String(customer.DisplayName || `Customer ${customer.Id}`), Number(customer.Balance || 0), customer.Active === false ? 0 : 1))
+    if (statements.length) await env.DB.batch(statements)
+    await env.DB.prepare(`UPDATE quickbooks_connections SET last_synced_at = CURRENT_TIMESTAMP,
+      last_sync_attempt_at = CURRENT_TIMESTAMP, last_sync_status = 'success', last_sync_error = NULL,
+      updated_at = CURRENT_TIMESTAMP WHERE id = 1`).run()
+    return json({ synced: customers.length })
+  } catch (error) {
+    const message = error instanceof ResponseError ? error.message : 'QuickBooks synchronization failed.'
+    await env.DB.prepare(`UPDATE quickbooks_connections SET last_sync_attempt_at = CURRENT_TIMESTAMP,
+      last_sync_status = 'failed', last_sync_error = ?1, updated_at = CURRENT_TIMESTAMP WHERE id = 1`)
+      .bind(message).run()
+    throw error
+  }
 }
 
 async function disconnectQuickBooks(request, env) {

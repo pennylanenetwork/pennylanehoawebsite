@@ -439,7 +439,8 @@ function ResidentHome({ user, onLogout }) {
           </div>
           {user.residentType === 'owner' && <section className="dues-summary" aria-labelledby="dues-summary-title">
             <div><p className="portal-kicker">QuickBooks Online</p><h2 id="dues-summary-title">HOA account balance</h2>
-              <p>{data.duesAccount ? `Balance last synchronized ${dateTime(data.duesAccount.syncedAt)}.` : 'Your property has not yet been connected to a QuickBooks billing account.'}</p></div>
+              <p>{data.duesAccount ? `Last successfully synchronized ${dateTime(data.duesAccount.syncedAt)}. QuickBooks balances are imported snapshots and may not be real-time.` : 'Your property has not yet been connected to a QuickBooks billing account.'}</p>
+              {data.duesAccount?.syncStatus === 'failed' && <p className="dues-sync-warning">The latest refresh was unsuccessful, so this balance may be outdated.</p>}</div>
             <strong>{data.duesAccount ? new Intl.NumberFormat('en-US', { style: 'currency', currency: 'USD' }).format(data.duesAccount.balance) : 'Not available'}</strong>
           </section>}
           </>
