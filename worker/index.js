@@ -106,9 +106,10 @@ async function readJson(request) {
 }
 
 class ResponseError extends Error {
-  constructor(message, status) {
+  constructor(message, status, code = null) {
     super(message)
     this.status = status
+    this.code = code
   }
 }
 
@@ -625,18 +626,46 @@ function quickBooksApiBase(env) {
     : 'https://sandbox-quickbooks.api.intuit.com'
 }
 
+export function isRetryableIntuitStatus(status) {
+  return status === 429 || status >= 500
+}
+
+function intuitTid(response) {
+  return response.headers.get('intuit_tid') || response.headers.get('intuit-tid') || null
+}
+
+function wait(milliseconds) {
+  return new Promise((resolve) => setTimeout(resolve, milliseconds))
+}
+
 async function quickBooksTokenRequest(env, parameters) {
-  const response = await fetch('https://oauth.platform.intuit.com/oauth2/v1/tokens/bearer', {
-    method: 'POST',
-    headers: { authorization: quickBooksAuthorization(env), accept: 'application/json', 'content-type': 'application/x-www-form-urlencoded' },
-    body: new URLSearchParams(parameters),
-  })
-  const result = await response.json().catch(() => ({}))
-  if (!response.ok || !result.access_token || !result.refresh_token) {
-    console.error(JSON.stringify({ message: 'QuickBooks token request failed', status: response.status, error: result.error }))
-    throw new ResponseError('QuickBooks authorization failed.', 502)
+  for (let attempt = 1; attempt <= 2; attempt += 1) {
+    const response = await fetch('https://oauth.platform.intuit.com/oauth2/v1/tokens/bearer', {
+      method: 'POST',
+      headers: { authorization: quickBooksAuthorization(env), accept: 'application/json', 'content-type': 'application/x-www-form-urlencoded' },
+      body: new URLSearchParams(parameters),
+    })
+    const result = await response.json().catch(() => ({}))
+    if (response.ok && result.access_token && result.refresh_token) return result
+
+    const traceId = intuitTid(response)
+    console.error(JSON.stringify({
+      message: 'QuickBooks token request failed',
+      status: response.status,
+      error: result.error,
+      intuitTid: traceId,
+      attempt,
+    }))
+    if (attempt === 1 && isRetryableIntuitStatus(response.status)) {
+      await wait(250)
+      continue
+    }
+    if (result.error === 'invalid_grant') {
+      throw new ResponseError('QuickBooks authorization has expired. Reconnect QuickBooks to continue.', 401, 'quickbooks_reconnect_required')
+    }
+    throw new ResponseError('QuickBooks authorization failed. Reconnect QuickBooks and try again.', 502, 'quickbooks_reconnect_required')
   }
-  return result
+  throw new ResponseError('QuickBooks authorization failed.', 502)
 }
 
 async function saveQuickBooksConnection(env, adminId, realmId, tokens, companyName = null) {
@@ -659,10 +688,10 @@ async function saveQuickBooksConnection(env, adminId, realmId, tokens, companyNa
       accessExpiresAt, refreshExpiresAt, adminId).run()
 }
 
-async function quickBooksAccess(env) {
+async function quickBooksAccess(env, forceRefresh = false) {
   const connection = await env.DB.prepare('SELECT * FROM quickbooks_connections WHERE id = 1').first()
   if (!connection) throw new ResponseError('QuickBooks is not connected.', 409)
-  if (new Date(connection.access_token_expires_at).getTime() > Date.now() + 60000) {
+  if (!forceRefresh && new Date(connection.access_token_expires_at).getTime() > Date.now() + 60000) {
     return { connection, accessToken: await decryptQuickBooksToken(env, connection.access_token_cipher, connection.access_token_iv) }
   }
   const refreshToken = await decryptQuickBooksToken(env, connection.refresh_token_cipher, connection.refresh_token_iv)
@@ -672,16 +701,28 @@ async function quickBooksAccess(env) {
 }
 
 async function quickBooksFetch(env, path) {
-  const { connection, accessToken } = await quickBooksAccess(env)
-  const response = await fetch(`${quickBooksApiBase(env)}${path.replace('{realmId}', encodeURIComponent(connection.realm_id))}`, {
-    headers: { authorization: `Bearer ${accessToken}`, accept: 'application/json' },
-  })
-  const result = await response.json().catch(() => ({}))
-  if (!response.ok) {
-    console.error(JSON.stringify({ message: 'QuickBooks API request failed', status: response.status, fault: result.Fault?.Error?.[0]?.code }))
+  for (let attempt = 1; attempt <= 2; attempt += 1) {
+    const { connection, accessToken } = await quickBooksAccess(env, attempt === 2)
+    const response = await fetch(`${quickBooksApiBase(env)}${path.replace('{realmId}', encodeURIComponent(connection.realm_id))}`, {
+      headers: { authorization: `Bearer ${accessToken}`, accept: 'application/json' },
+    })
+    const result = await response.json().catch(() => ({}))
+    if (response.ok) return result
+
+    console.error(JSON.stringify({
+      message: 'QuickBooks API request failed',
+      status: response.status,
+      fault: result.Fault?.Error?.[0]?.code,
+      intuitTid: intuitTid(response),
+      attempt,
+    }))
+    if (response.status === 401 && attempt === 1) continue
+    if (response.status === 401) {
+      throw new ResponseError('QuickBooks authorization has expired. Reconnect QuickBooks to continue.', 401, 'quickbooks_reconnect_required')
+    }
     throw new ResponseError('QuickBooks could not provide account information.', 502)
   }
-  return result
+  throw new ResponseError('QuickBooks could not provide account information.', 502)
 }
 
 function safeQuickBooksInvoiceLink(value) {
@@ -3026,7 +3067,7 @@ async function disconnectQuickBooks(request, env) {
     console.error(JSON.stringify({
       message: 'QuickBooks token revocation failed',
       status: response.status,
-      intuitTid: response.headers.get('intuit_tid'),
+      intuitTid: intuitTid(response),
     }))
     throw new ResponseError('QuickBooks could not confirm the disconnection. No local data was removed; try again.', 502)
   }

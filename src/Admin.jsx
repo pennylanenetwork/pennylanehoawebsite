@@ -1815,6 +1815,7 @@ function QuickBooksPanel({ properties }) {
       <div><p className="portal-kicker">Accounting integration</p><h1>QuickBooks Online</h1><p className="portal-lead">Read-only property balances from the HOA company file.</p></div>
       <div className="dashboard-actions">
         {record.connection ? <><button type="button" className="primary-button" disabled={syncing || disconnecting} onClick={sync}>{syncing ? 'Syncing...' : 'Sync now'}</button>
+          <a className="quiet-button" href="/api/admin/quickbooks/start">Reconnect</a>
           <button type="button" className="row-delete" disabled={syncing || disconnecting} onClick={disconnect}>{disconnecting ? 'Disconnecting...' : 'Disconnect QuickBooks'}</button></>
           : <a className="primary-button" href="/api/admin/quickbooks/start">Connect QuickBooks</a>}
       </div>
@@ -1826,7 +1827,7 @@ function QuickBooksPanel({ properties }) {
         <div><strong>{record.connection.companyName || 'Connected QuickBooks company'}</strong><span>{record.connection.lastSyncedAt ? `Last successful sync ${dateTime(record.connection.lastSyncedAt)}` : 'No successful synchronization yet'}</span></div>
         <div className="quickbooks-sync-result"><strong>{syncStatus === 'failed' ? 'Latest sync failed' : syncStatus === 'success' ? 'Latest sync succeeded' : 'Synchronization pending'}</strong><span>{record.connection.lastSyncAttemptAt ? `Attempted ${dateTime(record.connection.lastSyncAttemptAt)}` : 'Run the first synchronization when ready'}</span></div>
       </div>
-      {syncStatus === 'failed' && <p className="quickbooks-sync-error" role="alert">{record.connection.lastSyncError || 'QuickBooks synchronization failed. Try again and review the Worker logs if the problem continues.'}</p>}
+      {syncStatus === 'failed' && <div className="quickbooks-sync-error" role="alert"><span>{record.connection.lastSyncError || 'QuickBooks synchronization failed. Try again and review the Worker logs if the problem continues.'}</span>{record.connection.lastSyncError?.toLowerCase().includes('reconnect') && <a href="/api/admin/quickbooks/start">Reconnect QuickBooks</a>}</div>}
       <p className="form-context">Balances and invoices are imported snapshots and may not be real-time. The current snapshot contains {record.invoiceSummary.openInvoiceCount} open invoices totaling {new Intl.NumberFormat('en-US', { style: 'currency', currency: 'USD' }).format(record.invoiceSummary.openInvoiceBalance)}. Match each property to one QuickBooks customer; a customer can be linked to only one property.</p>
       <div className="quickbooks-mappings">
         {properties.map((property) => <label key={property.id}><span>{property.address}{property.residentNames ? <small>{property.residentNames}</small> : null}</span>

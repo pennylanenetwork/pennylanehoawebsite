@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict'
 import test from 'node:test'
-import { normalizeQuickBooksInvoice } from '../worker/index.js'
+import { isRetryableIntuitStatus, normalizeQuickBooksInvoice } from '../worker/index.js'
 
 test('normalizes an open QuickBooks invoice for storage', () => {
   const invoice = normalizeQuickBooksInvoice({
@@ -51,4 +51,12 @@ test('stores only HTTPS invoice links hosted by Intuit', () => {
     CustomerRef: { value: '2' }, InvoiceLink: 'https://example.com/pay',
   }, 'sync-1')
   assert.equal(external.invoiceLink, null)
+})
+
+test('retries only transient Intuit response statuses', () => {
+  assert.equal(isRetryableIntuitStatus(429), true)
+  assert.equal(isRetryableIntuitStatus(500), true)
+  assert.equal(isRetryableIntuitStatus(503), true)
+  assert.equal(isRetryableIntuitStatus(400), false)
+  assert.equal(isRetryableIntuitStatus(401), false)
 })
