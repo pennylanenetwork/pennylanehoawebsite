@@ -1315,6 +1315,7 @@ function PropertySummaryRow({ property, onOpen }) {
       </div>
       <div className="property-list-metrics">
         <span><strong>{property.accountCount}</strong> accounts</span>
+        <span className={property.renterCount > 0 ? 'has-renters' : ''}><strong>{property.renterCount}</strong> renters</span>
         <span><strong>{property.activeGuestCount}</strong> active guests</span>
         <span><strong>{property.pendingReservationCount}</strong> pending reservations</span>
       </div>
@@ -1537,7 +1538,7 @@ function AccountReview({ account, currentUser, properties, onStatus, onSave, onD
         </div>
         <div>
           <span className={`status status-${account.status}`}>{account.status}</span>
-          <span className="account-type">{residentTypeLabel(account.residentType)}</span>
+          <span className={`account-type${account.residentType === 'tenant' ? ' is-renter' : ''}`}>{residentTypeLabel(account.residentType)}</span>
           {account.role !== 'resident' && <span className="account-role">{account.role === 'super_admin' ? 'Super administrator' : 'Administrator'}</span>}
           {Boolean(account.isBoardMember) && <span className="committee-role">Board member</span>}
           {Boolean(account.isAccMember) && <span className="committee-role">ACC Committee</span>}
@@ -1928,7 +1929,8 @@ function PropertyDetail({ propertyId, onBack, isSuperAdmin, onUpdated }) {
     const agreement = poolAgreements.find((item) => item.userId === resident.id)
     return {
       ...resident,
-      residentType: `${residentTypeLabel(resident.residentType)}${agreement ? ` | Pool rules signed ${dateTime(agreement.acknowledgedAt)} (v${agreement.rulesVersion})` : ''}`,
+      relationshipLabel: residentTypeLabel(resident.residentType),
+      poolAgreementLabel: agreement ? `Pool rules signed ${dateTime(agreement.acknowledgedAt)} (v${agreement.rulesVersion})` : null,
     }
   })
   return (
@@ -2007,7 +2009,8 @@ function PropertyDetail({ propertyId, onBack, isSuperAdmin, onUpdated }) {
               </small>
             </div>
             <div>
-              <span>{resident.residentType.replace('_', ' ')}</span>
+              <span className={`resident-relationship${resident.residentType === 'tenant' ? ' is-renter' : ''}`}>{resident.relationshipLabel}</span>
+              {resident.poolAgreementLabel && <span>{resident.poolAgreementLabel}</span>}
               <span>{resident.role}</span>
               <span>{resident.status}</span>
             </div>

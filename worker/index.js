@@ -1340,6 +1340,8 @@ async function adminDashboard(request, env) {
         WHERE users.property_id = properties.id AND users.status IN ('active', 'pending')) AS residentNames,
       (SELECT COUNT(*) FROM users WHERE users.property_id = properties.id
         AND users.status IN ('active', 'pending')) AS accountCount,
+      (SELECT COUNT(*) FROM users WHERE users.property_id = properties.id
+        AND users.resident_type = 'tenant' AND users.status IN ('active', 'pending')) AS renterCount,
       (SELECT COUNT(*) FROM guest_registrations WHERE guest_registrations.property_id = properties.id
         AND guest_registrations.status = 'active' AND guest_registrations.ends_on >= date('now')) AS activeGuestCount,
       (SELECT COUNT(*) FROM clubhouse_reservations INNER JOIN users AS reservation_users
