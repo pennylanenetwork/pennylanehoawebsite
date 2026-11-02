@@ -3035,8 +3035,7 @@ async function quickBooksAdminStatus(request, env) {
     invoiceSummary: invoiceSummary.results[0] })
 }
 
-async function syncQuickBooksCustomers(request, env) {
-  await requireQuickBooksManager(request, env)
+async function syncQuickBooksData(env) {
   try {
     const customerQuery = encodeURIComponent('select * from Customer startposition 1 maxresults 1000')
     const customerResult = await quickBooksFetch(env, `/v3/company/{realmId}/query?query=${customerQuery}`)
@@ -3071,7 +3070,7 @@ async function syncQuickBooksCustomers(request, env) {
         last_sync_attempt_at = CURRENT_TIMESTAMP, last_sync_status = 'success', last_sync_error = NULL,
         updated_at = CURRENT_TIMESTAMP WHERE id = 1`),
     ])
-    return json({ synced: customers.length, invoices: invoices.length })
+    return { synced: customers.length, invoices: invoices.length }
   } catch (error) {
     const message = error instanceof ResponseError ? error.message : 'QuickBooks synchronization failed.'
     await env.DB.prepare(`UPDATE quickbooks_connections SET last_sync_attempt_at = CURRENT_TIMESTAMP,
@@ -3079,6 +3078,11 @@ async function syncQuickBooksCustomers(request, env) {
       .bind(message).run()
     throw error
   }
+}
+
+async function syncQuickBooksCustomers(request, env) {
+  await requireQuickBooksManager(request, env)
+  return json(await syncQuickBooksData(env))
 }
 
 async function disconnectQuickBooks(request, env) {
@@ -3292,6 +3296,24 @@ export default {
         path: new URL(request.url).pathname,
       }))
       return json({ error: 'Internal server error' }, { status: 500 })
+    }
+  },
+  async scheduled(controller, env) {
+    try {
+      const result = await syncQuickBooksData(env)
+      console.log(JSON.stringify({
+        message: 'Scheduled QuickBooks synchronization completed',
+        cron: controller.cron,
+        customers: result.synced,
+        invoices: result.invoices,
+      }))
+    } catch (error) {
+      console.error(JSON.stringify({
+        message: 'Scheduled QuickBooks synchronization failed',
+        cron: controller.cron,
+        error: error instanceof Error ? error.message : 'Unknown error',
+      }))
+      throw error
     }
   },
 }

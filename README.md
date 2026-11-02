@@ -32,7 +32,7 @@ Cloudflare resource bindings for D1, R2, Turnstile, email, OAuth, and payment se
 
 The resident governing-documents page also uses the Workers AI binding. It uses a model available on Workers Free, retrieves only published governing sections, and limits questions to 10 per resident and 100 site-wide per UTC day. When the daily AI allowance or a question limit is reached, the ordinary document search remains available. Apply migration `0028_governing_ai_usage.sql` before deploying this feature. The AI binding is not required for the local Vite-only preview; use `npm run cf:dev` to test the Worker endpoint.
 
-QuickBooks Online customer balances can be synchronized and mapped to HOA properties by a super administrator. The integration is read-only, uses encrypted OAuth tokens, and shows a mapped balance only to resident accounts marked as property owners. Setup, secret names, synchronization, and the sandbox-to-production checklist are documented in [`docs/OPERATIONS.md`](docs/OPERATIONS.md).
+QuickBooks Online customer balances can be synchronized and mapped to HOA properties by a super administrator or treasurer. The read-only integration runs automatically twice daily, supports an immediate manual sync, uses encrypted OAuth tokens, and shows mapped billing data only to resident accounts marked as property owners. Intuit connection controls remain restricted to super administrators. Setup, secret names, synchronization, and operating procedures are documented in [`docs/OPERATIONS.md`](docs/OPERATIONS.md).
 
 ## Database migrations
 

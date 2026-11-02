@@ -48,6 +48,12 @@
   "observability": {
     "enabled": true
   },
+  "triggers": {
+    "crons": [
+      "0 0 * * *",
+      "0 12 * * *"
+    ]
+  },
   "vars": {
     "QUICKBOOKS_ENVIRONMENT": "production"
   }
