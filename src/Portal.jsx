@@ -356,7 +356,7 @@ function ResidentHome({ user, onLogout }) {
     }
   }
 
-  const tabs = ['overview', 'calendar', 'documents', 'pool', 'reserve', 'guests', 'messages', ...(user.residentType === 'owner' ? ['household'] : []), 'settings']
+  const tabs = ['overview', ...(user.residentType === 'owner' ? ['dues'] : []), 'calendar', 'documents', 'pool', 'reserve', 'guests', 'messages', ...(user.residentType === 'owner' ? ['household'] : []), 'settings']
   const clubhouseMinutes = (value) => { const [hours, minutes] = String(value || '00:00').split(':').map(Number); return hours * 60 + minutes }
   const displayMinutes = (value) => { const hours = Math.floor(value / 60); const minutes = value % 60; return `${hours % 12 || 12}${minutes ? `:${String(minutes).padStart(2, '0')}` : ''} ${hours < 12 ? 'AM' : 'PM'}` }
   const opens = clubhouseMinutes(data.clubhouse?.opensAt)
@@ -417,7 +417,7 @@ function ResidentHome({ user, onLogout }) {
           </p>
         )}
         {tab === 'overview' && (
-          <><div className="dashboard-columns">
+          <div className="dashboard-columns">
             <section>
               <h2>Announcements</h2>
               {data.announcements.map((item) => (
@@ -453,13 +453,15 @@ function ResidentHome({ user, onLogout }) {
               {data.boardMembers.length === 0 && <p className="empty-state">The active board roster has not been published.</p>}
             </section>
           </div>
-          {user.residentType === 'owner' && <section className="dues-summary" aria-labelledby="dues-summary-title">
+        )}
+        {tab === 'dues' && user.residentType === 'owner' && <section className="dues-workspace">
+          <section className="dues-summary" aria-labelledby="dues-summary-title">
             <div><p className="portal-kicker">QuickBooks Online</p><h2 id="dues-summary-title">HOA account balance</h2>
               <p>{data.duesAccount ? `Last successfully synchronized ${dateTime(data.duesAccount.syncedAt)}. QuickBooks balances are imported snapshots and may not be real-time.` : 'Your property has not yet been connected to a QuickBooks billing account.'}</p>
               {data.duesAccount?.syncStatus === 'failed' && <p className="dues-sync-warning">The latest refresh was unsuccessful, so this balance may be outdated.</p>}</div>
             <strong>{data.duesAccount ? new Intl.NumberFormat('en-US', { style: 'currency', currency: 'USD' }).format(data.duesAccount.balance) : 'Not available'}</strong>
-          </section>}
-          {user.residentType === 'owner' && data.duesAccount && <section className="invoice-summary" aria-labelledby="open-invoices-title">
+          </section>
+          {data.duesAccount && <section className="invoice-summary" aria-labelledby="open-invoices-title">
             <header><div><p className="portal-kicker">Billing details</p><h2 id="open-invoices-title">Open invoices</h2></div><span>{data.duesInvoices.length}</span></header>
             <p className="invoice-disclaimer">These are imported QuickBooks records and may not reflect recent payments. Payments open on an Intuit-hosted page; this website does not collect your card or bank information.</p>
             <div className="invoice-list">
@@ -474,8 +476,7 @@ function ResidentHome({ user, onLogout }) {
               {data.duesInvoices.length === 0 && <p className="empty-state">No open invoices were included in the latest successful synchronization.</p>}
             </div>
           </section>}
-          </>
-        )}
+        </section>}
         {tab === 'calendar' && <CalendarView events={data.events} />}
         {tab === 'documents' && (
           <section className="document-list">
