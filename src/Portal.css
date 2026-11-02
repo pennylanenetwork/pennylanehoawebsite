@@ -1,5 +1,5 @@
 .portal-shell { background: #eef0e8; min-height: 100vh; overflow: auto; }
-.portal-header { align-items: center; background: #f7f6f1; border-bottom: 1px solid #ccd1c8; display: flex; height: 76px; justify-content: space-between; padding: 0 max(24px, calc((100% - 1160px) / 2)); }
+.portal-header { align-items: center; background: #f7f6f1; border-bottom: 1px solid #ccd1c8; display: flex; height: 76px; justify-content: space-between; padding: 0 max(24px, calc((100% - 1440px) / 2)); }
 .portal-logo { display: block; height: 44px; overflow: hidden; position: relative; width: 232px; }
 .portal-logo img { height: auto; left: -8px; max-width: none; position: absolute; top: -12px; width: 245px; }
 .portal-back, .admin-nav a { color: #526159; font-size: 12px; font-weight: 700; }
@@ -34,14 +34,14 @@
 .form-error, .form-notice { font-size: 12px; line-height: 1.5; margin: 0 0 20px; padding: 12px; }
 .form-error { background: #f5e4df; color: #843b2b; }
 .form-notice { background: #e4ece4; color: #294b3c; }
-.resident-home { display: grid; gap: 70px; grid-template-columns: 1fr 370px; margin: auto; max-width: 1160px; padding: 110px 0; }
+.resident-home { display: grid; gap: 70px; grid-template-columns: 1fr 370px; margin: auto; max-width: 1440px; padding: 110px 0; }
 .resident-status { align-self: start; border-top: 1px solid #b9c0b8; display: grid; gap: 14px 20px; grid-template-columns: 90px 1fr; padding-top: 22px; }
 .resident-status span { color: #7a837d; font-size: 11px; }
 .resident-status strong { color: #294b3c; font-size: 13px; }
 .resident-status a, .resident-status button { grid-column: 1 / -1; margin-top: 8px; text-align: center; }
 .resident-status a { background: #294b3c; color: #fff; font-size: 12px; font-weight: 700; padding: 15px; }
 .admin-nav { display: flex; gap: 26px; }
-.admin-main { margin: auto; max-width: 1160px; padding: 70px 0; }
+.admin-main { margin: auto; max-width: 1440px; padding: 70px 0; }
 .admin-main > header { align-items: end; display: flex; justify-content: space-between; margin-bottom: 40px; }
 .admin-main h1 { font-size: 48px; margin-bottom: 0; }
 .admin-main > header > p { color: #727d76; font-size: 12px; }
@@ -58,7 +58,7 @@
 .account-actions .quiet-action { background: transparent; color: #803b31; }
 .account-tools { align-items: center; border-bottom: 1px solid #aeb7ae; display: flex; justify-content: space-between; margin-bottom: 18px; padding-bottom: 12px; }.account-tools p { color: #77817a; font-size: 11px; margin: 0; }.resident-admin-list { display: grid; gap: 14px; }.account-review { border: 1px solid #c8cec5; padding: 18px; }.account-review > header { align-items: start; display: flex; gap: 20px; justify-content: space-between; }.account-review header strong, .account-review header small { display: block; }.account-review header strong { color: #294b3c; font-size: 14px; }.account-review header small { color: #77817a; font-size: 10px; margin-top: 5px; }.account-review header > div:last-child { align-items: end; display: flex; flex-direction: column; gap: 5px; }.account-type { color: #77817a; font-size: 9px; text-transform: uppercase; }.account-role { background: #e0e9e1; color: #294b3c; font-size: 9px; font-weight: 700; padding: 4px 6px; text-transform: uppercase; }.committee-role { background: #f1ded8; color: #7b3d31; font-size: 9px; font-weight: 700; padding: 4px 6px; text-transform: uppercase; }.account-review form { border-top: 1px solid #d2d6cf; display: grid; gap: 14px; margin-top: 16px; padding-top: 16px; }.account-review form label { color: #3a4b43; display: grid; font-size: 10px; font-weight: 700; gap: 6px; }.account-review form input, .account-review form select { background: #fff; border: 1px solid #c8cec5; color: #26352f; font: inherit; font-size: 12px; height: 40px; padding: 0 10px; width: 100%; }.committee-options { border-bottom: 1px solid #d2d6cf; border-top: 1px solid #d2d6cf; display: grid; gap: 12px; grid-template-columns: 1fr 1fr; padding: 14px 0; }.committee-options .rules-check { align-items: center; }.committee-options .rules-check input { height: 17px; width: 17px; }.account-review-actions { display: flex; flex-wrap: wrap; gap: 8px; margin-top: 14px; }.account-review-actions button { background: transparent; border: 1px solid #9faaa2; color: #294b3c; cursor: pointer; font: inherit; font-size: 10px; padding: 7px 10px; }.account-review-actions .row-delete { color: #8a3f33; }.account-review-actions .role-button { background: #294b3c; border-color: #294b3c; color: #fff; }
 .empty-state { color: #77817a; font-size: 13px; padding: 40px 10px; }
-.resident-dashboard { margin: auto; max-width: 1160px; padding: 58px 0 90px; }
+.resident-dashboard { margin: auto; max-width: 1440px; padding: 58px 0 90px; }
 .dashboard-heading { align-items: end; display: flex; justify-content: space-between; margin-bottom: 38px; }
 .dashboard-heading h1 { color: #294b3c; font-family: 'Fraunces', serif; font-size: 48px; font-weight: 400; letter-spacing: 0; margin: 10px 0; }
 .dashboard-actions { display: flex; gap: 10px; }.dashboard-actions a { align-items: center; display: flex; }
@@ -103,8 +103,11 @@
 @media (max-width: 760px) { .household-layout { display: block; }.household-history { margin-top: 45px; }.access-workspace > header { align-items: stretch; flex-direction: column; gap: 12px; }.access-actions a { display: block; text-align: center; }.access-filters, .access-row { grid-template-columns: 1fr; }.access-row > div:last-child { align-items: flex-start; flex-direction: column; gap: 7px; text-align: left; } }
 @media (max-width: 760px) { .calendar-toolbar { align-items: stretch; flex-direction: column; gap: 14px; }.month-controls { justify-content: space-between; }.month-day { min-height: 92px; padding: 3px; }.month-day > time { margin-bottom: 4px; }.weekday-row span { font-size: 8px; padding: 5px 2px; }.calendar-chip { display: -webkit-box; font-size: 7px; line-height: 1.2; min-height: 23px; overflow: hidden; overflow-wrap: anywhere; padding: 3px; text-overflow: clip; white-space: normal; -webkit-box-orient: vertical; -webkit-line-clamp: 2; }.calendar-chip.type-clubhouse { min-height: 23px; }.calendar-row { grid-template-columns: 1fr; }.calendar-download { justify-self: start; min-width: 60px; } }
 .calendar-chip.type-blackout { background: #e9e4e2; color: #6d3d37; }
-.calendar-month-list { margin-top: 30px; }
+.calendar-month-layout { align-items: start; display: grid; gap: 32px; grid-template-columns: minmax(0, 1.65fr) minmax(300px, .85fr); }
+.calendar-month-list { min-width: 0; }
 .calendar-month-list h3 { border-bottom: 2px solid #173b63; color: #173b63; font-family: 'Fraunces', serif; font-size: 23px; font-weight: 400; margin: 0; padding-bottom: 13px; }
+@media (min-width: 901px) { .calendar-month-list .calendar-row { gap: 8px 12px; grid-template-columns: minmax(0, 1fr) auto; padding: 16px 4px; }.calendar-month-list .calendar-row time { grid-column: 1; }.calendar-month-list .calendar-row > div { grid-column: 1 / -1; }.calendar-month-list .calendar-row > span { grid-column: 2; grid-row: 1; text-align: right; }.calendar-month-list .calendar-download { grid-column: 1 / -1; justify-self: start; } }
+@media (max-width: 900px) { .calendar-month-layout { display: block; }.calendar-month-list { margin-top: 30px; } }
 @media (max-width: 760px) { .photo-workspace { display: block; }.photo-list { margin-top: 45px; }.photo-editor { grid-template-columns: 105px 1fr; }.photo-editor > img { height: 105px; }.photo-actions { grid-column: 1 / -1; } }
 @media (max-width: 760px) { .property-detail > header { grid-template-columns: 1fr; }.property-detail h2 { font-size: 34px; }.property-summary { grid-template-columns: 1fr 1fr 1fr; }.property-resident { align-items: start; flex-direction: column; }.property-resident > div:last-child { flex-wrap: wrap; } }
 @media (max-width: 760px) { .overview-metrics { grid-template-columns: 1fr 1fr; }.overview-metrics button { min-height: 112px; }.overview-recent, .clubhouse-controls { grid-template-columns: 1fr; }.clubhouse-controls { gap: 36px; }.clubhouse-controls .primary-button { width: 100%; }.blackout-list article { align-items: flex-start; }.override-controls { padding: 13px; } }
@@ -141,3 +144,27 @@
 /* Shared resident and administration palette. */
 .portal-shell { background: var(--hoa-mist); color: var(--hoa-ink); }.portal-header, .auth-panel, .account-review, .reservation-review, .message-review, .overview-metrics button, .pool-facts > div, .pool-rules-compact, .thread-entry.from-resident, .deposit-callout { background: var(--hoa-white); }.portal-back, .admin-nav a, .portal-view-nav a, .portal-lead, .form-context, .empty-state, .announcement p, .reservation-record p, .reservation-review p, .message-body, .resident-message-record p, .pool-rules ol, .pool-rules ul { color: var(--hoa-muted); }.brand em, .portal-kicker, .message-category, .resident-message-record header > span:first-child, .board-member-row span, .pool-facts small, .overview-metrics strong, .communication-record header span { color: var(--hoa-blue); }.brand-mark, .portal-view-nav a.active, .primary-button, .resident-status a, .account-actions button, .workspace-tabs button.active, .calendar-modes button.active, .account-review-actions .role-button { background: var(--hoa-navy); border-color: var(--hoa-navy); color: #fff; }.auth-intro h1, .resident-home h1, .admin-main h1, .dashboard-heading h1, .dashboard-columns h2, .editor-panel h2, .data-list h2, .announcement h3, .data-row strong, .row-title-button, .property-detail h2, .property-section > h3, .property-resident strong, .property-list-row strong, .document-list > a, .clubhouse-rules summary, .clubhouse-rules h3, .reservation-history h2, .reservation-admin-list h2, .message-review header strong, .resident-message-history h2, .guest-history h2, .household-history h2, .settings-panel h2, .account-details dd, .pool-workspace h2, .pool-facts strong, .pool-rules > h3, .resident-pool-records h3, .deposit-callout strong, .deposit-status strong { color: var(--hoa-navy); }.auth-intro h1 i { color: var(--hoa-blue); }.auth-tabs button.active { color: var(--hoa-navy); }.auth-tabs button.active::after { background: var(--hoa-blue); }.auth-panel input:focus, .auth-panel select:focus, .property-search input:focus { border-color: var(--hoa-blue); outline-color: rgba(47,102,154,.16); }.editor-panel, .property-search, .settings-panel, .clubhouse-settings, .blackout-manager { border-top-color: var(--hoa-navy); }.reservation-review.is-pending, .message-review.status-border-new, .deposit-callout { border-left-color: var(--hoa-blue); }.account-role, .agreement-status, .calendar-chip, .thread-entry.from-admin { background: #e3edf5; color: var(--hoa-navy); }.committee-role, .calendar-chip.type-clubhouse { background: #e8edf2; color: #405b75; }.secondary-button, .quiet-button, .row-actions button, .row-delete, .account-review-actions button, .calendar-download { border-color: #9eafbf; }.form-notice { background: #e3edf5; color: var(--hoa-navy); }.deposit-actions, .override-controls { background: #e8edf2; }.portal-shell input, .portal-shell select, .portal-shell textarea { border-color: #b9c6d1; color: var(--hoa-ink); }.portal-shell :is(.workspace-tabs, .data-list, .data-row, .document-list, .document-list > a, .announcement, .board-member-row, .reservation-record, .resident-message-record, .guest-record, .household-record, .property-section > h3, .property-resident, .property-list-row, .communication-record, .pool-card-row) { border-color: #c4ced7; }
 .account-type { border: 1px solid #9eafbf; color: #52677a; font-weight: 700; padding: 4px 7px; }.account-type.is-renter, .property-resident .resident-relationship.is-renter { background: var(--hoa-navy); border-color: var(--hoa-navy); color: #fff; font-weight: 700; }.property-list-metrics span.has-renters { background: #dbe8f2; color: var(--hoa-navy); }
+
+/* Slightly larger portal typography for comfortable desktop and mobile reading. */
+.portal-back, .admin-nav a, .portal-view-nav a { font-size: 13px; }
+.portal-kicker, .auth-divider { font-size: 11px; }
+.portal-lead { font-size: 15px; }
+.workspace-tabs button, .primary-button, .secondary-button, .oauth-button { font-size: 13px; }
+.editor-panel label, .auth-panel label, .account-review form label, .clubhouse-controls label, .override-controls > label, .message-review label, .thread-reply-form label, .access-filters label, .pool-card-form label, .photo-editor label, .account-tools label { font-size: 12px; }
+.editor-panel input, .editor-panel select, .editor-panel textarea, .auth-panel input, .auth-panel select, .account-review form input, .account-review form select, .clubhouse-controls input, .override-controls textarea, .message-review textarea, .thread-reply-form textarea, .access-filters input, .access-filters select, .pool-card-form input, .pool-card-form select, .pool-card-row input, .pool-card-row select, .photo-editor input, .photo-editor textarea, .photo-editor select, .account-tools input { font-size: 14px; }
+.announcement p, .calendar-row p, .reservation-record p, .reservation-review p, .resident-message-record p, .thread-entry p, .settings-panel > p, .form-context, .deposit-callout p, .deposit-status { font-size: 13px; }
+.data-row strong, .row-title-button, .board-member-row strong, .reservation-record strong, .reservation-review strong, .guest-record strong, .household-record strong, .access-row strong, .pool-card-row strong, .blackout-list strong, .invoice-identity strong { font-size: 14px; }
+.announcement small, .data-row small, .document-list small, .property-resident small, .property-list-row small, .reservation-record small, .reservation-review small, .guest-record small, .household-record small, .access-row small, .pool-card-row small, .blackout-list small, .message-summary-identity small, .message-summary time, .resident-message-record time, .invoice-identity small { font-size: 11px; }
+.calendar-modes button, .month-controls button { font-size: 11px; }
+.month-controls strong { font-size: 21px; }
+.weekday-row span, .calendar-chip { font-size: 10px; }
+.month-day > time { font-size: 11px; }
+.calendar-row time { font-size: 12px; }
+.calendar-row strong { font-size: 16px; }
+.calendar-row span, .calendar-download { font-size: 10px; }
+
+@media (max-width: 760px) {
+  .portal-back { font-size: 11px; }
+  .portal-view-nav a { font-size: 10px; }
+  .calendar-chip { font-size: 8px; }
+}

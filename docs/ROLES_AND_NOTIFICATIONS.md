@@ -43,6 +43,8 @@ A normal administrator does not automatically receive or gain access to routed m
 
 An administrator review does not publish a reservation. The resident continues to see `Pending`, and the requested period remains unavailable to competing requests. The reservation changes to `Approved` and appears as `Clubhouse Reserved` on the members calendar only after Stripe confirms the deposit payment.
 
+Amenities coordinators, administrators, and super administrators with reservation-management access can add clubhouse blackout periods. An all-day blackout requires only a first and last date, includes the complete final date, and appears on the members calendar under the administrator-provided title. Timed blackouts may span more than 12 hours because the public event duration limit does not apply to administrator scheduling controls.
+
 ## Administration permissions
 
 | Assignment | Administration access |

@@ -8,6 +8,8 @@ This file records material changes to the Penny Lane Estates HOA website and por
 
 ### Added
 
+- Added an event list beside the resident month calendar on desktop, with the calendar and list remaining vertically stacked on tablet and mobile.
+- Added regression coverage for date-only all-day clubhouse blackouts and timed blackouts longer than 12 hours.
 - Connected the production QuickBooks Online company through encrypted OAuth credentials.
 - Added an owner-only **Dues** tab with the mapped HOA balance, open invoices, Intuit-hosted payment links, and customer-facing product/service descriptions.
 - Added automatic QuickBooks synchronization at `00:00` and `12:00` UTC, with **Sync now** retained for immediate updates.
@@ -15,6 +17,11 @@ This file records material changes to the Penny Lane Estates HOA website and por
 
 ### Changed
 
+- Increased the maximum resident and administration workspace width from 1160px to 1440px on large desktop displays.
+- Increased portal navigation, form, record, and calendar text sizes for improved readability while preserving the existing mobile layouts.
+- Updated all-day clubhouse blackouts to require dates only, include the complete final date, and avoid time-field validation.
+- Removed the general 12-hour event-duration limit from administrator-created timed clubhouse blackouts.
+- Ignored the local `.tmp` workspace so browser profiles, document extraction files, and other temporary artifacts are not added to Git.
 - Granted super administrators and treasurers access to QuickBooks customer synchronization and property mapping.
 - Kept QuickBooks connect, reconnect, and disconnect controls restricted to super administrators.
 - Centered the QuickBooks payment-button label and improved invoice presentation.

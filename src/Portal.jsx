@@ -1084,35 +1084,37 @@ function CalendarView({ events }) {
         )}
       </header>
       {view === 'month' ? (<>
-        <div className="month-calendar">
-          <div className="weekday-row">
-            {['Sun', 'Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat'].map((day) => (
-              <span key={day}>{day}</span>
-            ))}
+        <div className="calendar-month-layout">
+          <div className="month-calendar">
+            <div className="weekday-row">
+              {['Sun', 'Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat'].map((day) => (
+                <span key={day}>{day}</span>
+              ))}
+            </div>
+            <div className="month-grid">
+              {days.map((day) => {
+                const dayEvents = displayedEvents.filter((item) => occursOnDay(item, day))
+                return (
+                  <div className={`month-day ${day.getMonth() !== month.getMonth() ? 'outside' : ''}`} key={day.toISOString()}>
+                    <time>{day.getDate()}</time>
+                    {dayEvents.slice(0, 3).map((item) => item.eventType === 'blackout' ? (
+                      <span className="calendar-chip type-blackout" key={item.id} title={item.title}>{item.title}{item.allDay ? ' - All day' : ` ${compactTime(item.startsAt)}-${compactTime(item.endsAt)}`}</span>
+                    ) : (
+                      <a href={`/api/events/${item.id}.ics`} className={`calendar-chip type-${item.eventType}`} key={item.id} title={`${item.title} - download calendar file`}>
+                        {item.eventType === 'clubhouse' ? `Reserved ${compactTime(item.startsAt)}-${compactTime(item.endsAt)}` : item.title}
+                      </a>
+                    ))}
+                    {dayEvents.length > 3 && <small>+{dayEvents.length - 3} more</small>}
+                  </div>
+                )
+              })}
+            </div>
           </div>
-          <div className="month-grid">
-            {days.map((day) => {
-              const dayEvents = displayedEvents.filter((item) => occursOnDay(item, day))
-              return (
-                <div className={`month-day ${day.getMonth() !== month.getMonth() ? 'outside' : ''}`} key={day.toISOString()}>
-                  <time>{day.getDate()}</time>
-                  {dayEvents.slice(0, 3).map((item) => item.eventType === 'blackout' ? (
-                    <span className="calendar-chip type-blackout" key={item.id} title={item.title}>{item.title}{item.allDay ? ' - All day' : ` ${compactTime(item.startsAt)}-${compactTime(item.endsAt)}`}</span>
-                  ) : (
-                    <a href={`/api/events/${item.id}.ics`} className={`calendar-chip type-${item.eventType}`} key={item.id} title={`${item.title} - download calendar file`}>
-                      {item.eventType === 'clubhouse' ? `Reserved ${compactTime(item.startsAt)}-${compactTime(item.endsAt)}` : item.title}
-                    </a>
-                  ))}
-                  {dayEvents.length > 3 && <small>+{dayEvents.length - 3} more</small>}
-                </div>
-              )
-            })}
-          </div>
+          <section className="calendar-month-list" aria-label={`Events in ${monthLabel}`}>
+            <h3>Events in {monthLabel}</h3>
+            {currentMonthResult?.error ? <p className="empty-state" role="alert">{currentMonthResult.error}</p> : currentMonthResult?.events ? <CalendarEventList events={listedEvents} emptyMessage="No events this month." /> : <p className="empty-state">Loading events...</p>}
+          </section>
         </div>
-        <section className="calendar-month-list" aria-label={`Events in ${monthLabel}`}>
-          <h3>Events in {monthLabel}</h3>
-          {currentMonthResult?.error ? <p className="empty-state" role="alert">{currentMonthResult.error}</p> : currentMonthResult?.events ? <CalendarEventList events={listedEvents} emptyMessage="No events this month." /> : <p className="empty-state">Loading events...</p>}
-        </section>
       </>) : <CalendarEventList events={events} emptyMessage="No upcoming events." />}
     </section>
   )

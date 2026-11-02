@@ -7,6 +7,7 @@ Public website and resident services for Penny Lane Estates Homeowners Associati
 - Public HOA information, events, documents, quick links, contact form, and photo gallery
 - Approved resident registration with Google, Yahoo, or emailed sign-in codes
 - Resident announcements, governing documents and document search, messaging, pool information, guest registration, and clubhouse reservations
+- Responsive resident and administration workspaces with a desktop month calendar and adjacent monthly event list that stack on smaller screens
 - Stripe-hosted clubhouse security deposits with administrative approval, refund, and retention workflows
 - Property, account, pool-card, communications, guest, reservation, website-content, and role management
 - Owner-only QuickBooks Online balances, open invoices, product/service descriptions, and Intuit-hosted payment links
@@ -44,6 +45,10 @@ Cloudflare resource bindings for D1, R2, Turnstile, email, OAuth, and payment se
 The resident governing-documents page also uses the Workers AI binding. It uses a model available on Workers Free, retrieves only published governing sections, and limits questions to 10 per resident and 100 site-wide per UTC day. When the daily AI allowance or a question limit is reached, the ordinary document search remains available. Apply migration `0028_governing_ai_usage.sql` before deploying this feature. The AI binding is not required for the local Vite-only preview; use `npm run cf:dev` to test the Worker endpoint.
 
 QuickBooks Online customer balances can be synchronized and mapped to HOA properties by a super administrator or treasurer. The read-only integration runs automatically twice daily, supports an immediate manual sync, uses encrypted OAuth tokens, and shows mapped billing data only to resident accounts marked as property owners. Intuit connection controls remain restricted to super administrators. Setup, secret names, synchronization, and operating procedures are documented in [`docs/OPERATIONS.md`](docs/OPERATIONS.md).
+
+## Calendar and clubhouse scheduling
+
+The resident month view shows the calendar beside an event list on desktop and stacks the same content vertically on tablet and mobile. Approved clubhouse reservations appear as reserved periods only after the required deposit is paid. Administrator blackout periods appear by their configured title. All-day blackouts accept inclusive start and end dates without requiring times; timed blackouts are not subject to the public event duration limit.
 
 ## Database migrations
 

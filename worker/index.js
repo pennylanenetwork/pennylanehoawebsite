@@ -918,6 +918,10 @@ export function allDayBlackoutRange(startsOn, endsOn) {
   return { startsAt: lindaleLocalToIso(startsOn, 0), endsAt: lindaleLocalToIso(ends.toISOString().slice(0, 10), 0) }
 }
 
+export function clubhouseBlackoutRange(startsAt, endsAt, allDay = false) {
+  return allDay ? allDayBlackoutRange(startsAt, endsAt) : validBlackoutRange(startsAt, endsAt)
+}
+
 export function reservationSlotRange(date, slot, settings) {
   if (!/^\d{4}-\d{2}-\d{2}$/.test(String(date))) throw new ResponseError('Select a valid reservation date.', 400)
   const [year, month, day] = date.split('-').map(Number)
@@ -2246,7 +2250,8 @@ async function updateClubhouseSettings(request, env) {
 async function createClubhouseBlackout(request, env) {
   const admin = await requireReservationManager(request, env)
   const body = await readJson(request)
-  const range = validDateRange(body.startsAt, body.endsAt)
+  const allDay = Boolean(body.allDay)
+  const range = clubhouseBlackoutRange(body.startsAt, body.endsAt, allDay)
   const id = crypto.randomUUID()
   const title = cleanText(body.title, 140, true)
   const notes = cleanText(body.notes, 1000)

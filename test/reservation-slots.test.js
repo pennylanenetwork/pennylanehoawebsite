@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict'
 import test from 'node:test'
-import { allDayBlackoutRange, reservationSlotRange } from '../worker/index.js'
+import { allDayBlackoutRange, clubhouseBlackoutRange, reservationSlotRange } from '../worker/index.js'
 
 const settings = { opensAt: '08:00', closesAt: '23:00', cleanupBufferMinutes: 60 }
 
@@ -27,5 +27,19 @@ test('all-day blackouts include the selected final date in Lindale', () => {
   assert.deepEqual(allDayBlackoutRange('2030-01-15', '2030-01-17'), {
     startsAt: '2030-01-15T06:00:00.000Z',
     endsAt: '2030-01-18T06:00:00.000Z',
+  })
+})
+
+test('clubhouse blackout submissions accept dates without times when all day is selected', () => {
+  assert.deepEqual(clubhouseBlackoutRange('2030-07-15', '2030-07-15', true), {
+    startsAt: '2030-07-15T05:00:00.000Z',
+    endsAt: '2030-07-16T05:00:00.000Z',
+  })
+})
+
+test('timed clubhouse blackouts are not limited to 12 hours', () => {
+  assert.deepEqual(clubhouseBlackoutRange('2030-07-15T12:00:00.000Z', '2030-07-17T12:00:00.000Z'), {
+    startsAt: '2030-07-15T12:00:00.000Z',
+    endsAt: '2030-07-17T12:00:00.000Z',
   })
 })
