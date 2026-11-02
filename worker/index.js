@@ -582,6 +582,18 @@ async function requireDepositManager(request, env) {
   return user
 }
 
+export function canManageQuickBooks(user) {
+  return user.role === 'super_admin' || Boolean(user.isTreasurer)
+}
+
+async function requireQuickBooksManager(request, env) {
+  const user = await requireUser(request, env)
+  if (!canManageQuickBooks(user)) {
+    throw new ResponseError('QuickBooks access requires the treasurer or super administrator role.', 403)
+  }
+  return user
+}
+
 async function requireSuperAdmin(request, env) {
   const user = await requireUser(request, env)
   if (user.role !== 'super_admin') throw new ResponseError('Super administrator access required.', 403)
@@ -2989,7 +3001,7 @@ async function finishQuickBooksAuth(request, env) {
 }
 
 async function quickBooksAdminStatus(request, env) {
-  await requireSuperAdmin(request, env)
+  await requireQuickBooksManager(request, env)
   const [connection, customers, mappings, invoiceSummary] = await env.DB.batch([
     env.DB.prepare(`SELECT realm_id AS realmId, company_name AS companyName,
       last_synced_at AS lastSyncedAt, last_sync_attempt_at AS lastSyncAttemptAt,
@@ -3009,7 +3021,7 @@ async function quickBooksAdminStatus(request, env) {
 }
 
 async function syncQuickBooksCustomers(request, env) {
-  await requireSuperAdmin(request, env)
+  await requireQuickBooksManager(request, env)
   try {
     const customerQuery = encodeURIComponent('select * from Customer startposition 1 maxresults 1000')
     const customerResult = await quickBooksFetch(env, `/v3/company/{realmId}/query?query=${customerQuery}`)
@@ -3092,7 +3104,7 @@ async function disconnectQuickBooks(request, env) {
 }
 
 async function mapQuickBooksProperty(request, env, propertyId) {
-  const admin = await requireSuperAdmin(request, env)
+  const admin = await requireQuickBooksManager(request, env)
   const body = await readJson(request)
   const customerId = cleanText(body.customerId, 100)
   if (customerId) {

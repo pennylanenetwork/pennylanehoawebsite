@@ -134,7 +134,10 @@ export default function Admin() {
         setUser(currentUser)
         setAccounts(users)
         setData({ ...dashboard, governingDocuments: governing.documents })
-        if (!fullAdmin) setTab(currentUser.isTreasurer && !currentUser.isAmenitiesCoordinator ? 'reservations' : currentUser.isAmenitiesCoordinator ? 'reservations' : 'messages')
+        if (!fullAdmin) {
+          const requestedQuickBooks = new URLSearchParams(window.location.search).get('tab') === 'quickbooks'
+          setTab(currentUser.isTreasurer && requestedQuickBooks ? 'quickbooks' : currentUser.isTreasurer && !currentUser.isAmenitiesCoordinator ? 'reservations' : currentUser.isAmenitiesCoordinator ? 'reservations' : 'messages')
+        }
       })
       .catch((requestError) => setError(requestError.message))
   }, [])
@@ -403,11 +406,12 @@ export default function Admin() {
   const fullAdmin = ['admin', 'super_admin'].includes(user?.role)
   const canManageReservations = fullAdmin || Boolean(user?.isAmenitiesCoordinator)
   const canManageDeposits = user?.role === 'super_admin' || Boolean(user?.isTreasurer) || Boolean(user?.isAmenitiesCoordinator)
+  const canManageQuickBooks = user?.role === 'super_admin' || Boolean(user?.isTreasurer)
   const canViewReservations = canManageReservations || Boolean(user?.isTreasurer)
   const canViewMessages = fullAdmin || Boolean(user?.isBoardMember) || Boolean(user?.isAccMember) || Boolean(user?.isTreasurer) || Boolean(user?.isAmenitiesCoordinator)
   const tabs = fullAdmin
-    ? ['overview', 'accounts', 'properties', 'access', 'in the know', 'quick links', 'announcements', 'events', 'documents', 'governing documents', 'photos', 'reservations', 'messages', ...(user?.role === 'super_admin' ? ['quickbooks'] : [])]
-    : [...(canViewReservations ? ['reservations'] : []), ...(canViewMessages ? ['messages'] : [])]
+    ? ['overview', 'accounts', 'properties', 'access', 'in the know', 'quick links', 'announcements', 'events', 'documents', 'governing documents', 'photos', 'reservations', 'messages', ...(canManageQuickBooks ? ['quickbooks'] : [])]
+    : [...(canViewReservations ? ['reservations'] : []), ...(canViewMessages ? ['messages'] : []), ...(canManageQuickBooks ? ['quickbooks'] : [])]
   const normalizedPropertyQuery = propertyQuery.trim().toLowerCase()
   const visibleProperties = data.properties.filter((property) => `${property.address} ${property.residentNames || ''}`.toLowerCase().includes(normalizedPropertyQuery))
   const normalizedAccountQuery = accountQuery.trim().toLowerCase()
@@ -477,7 +481,7 @@ export default function Admin() {
         )}
 
         {tab === 'overview' && fullAdmin && <AdminOverview accounts={accounts} data={data} onOpen={setTab} />}
-        {tab === 'quickbooks' && user?.role === 'super_admin' && <QuickBooksPanel properties={data.properties} />}
+        {tab === 'quickbooks' && canManageQuickBooks && <QuickBooksPanel properties={data.properties} canControlConnection={user?.role === 'super_admin'} />}
 
         {tab === 'accounts' && (
           <section>
@@ -1767,7 +1771,7 @@ function PhotoEditor({ photo, canMoveUp, canMoveDown, onMoveUp, onMoveDown, onUp
   )
 }
 
-function QuickBooksPanel({ properties }) {
+function QuickBooksPanel({ properties, canControlConnection }) {
   const [record, setRecord] = useState(null)
   const [error, setError] = useState('')
   const [notice, setNotice] = useState('')
@@ -1813,9 +1817,9 @@ function QuickBooksPanel({ properties }) {
       <div><p className="portal-kicker">Accounting integration</p><h1>QuickBooks Online</h1><p className="portal-lead">Read-only property balances from the HOA company file.</p></div>
       <div className="dashboard-actions">
         {record.connection ? <><button type="button" className="primary-button" disabled={syncing || disconnecting} onClick={sync}>{syncing ? 'Syncing...' : 'Sync now'}</button>
-          <a className="quiet-button" href="/api/admin/quickbooks/start">Reconnect</a>
-          <button type="button" className="row-delete" disabled={syncing || disconnecting} onClick={disconnect}>{disconnecting ? 'Disconnecting...' : 'Disconnect QuickBooks'}</button></>
-          : <a className="primary-button" href="/api/admin/quickbooks/start">Connect QuickBooks</a>}
+          {canControlConnection && <><a className="quiet-button" href="/api/admin/quickbooks/start">Reconnect</a>
+            <button type="button" className="row-delete" disabled={syncing || disconnecting} onClick={disconnect}>{disconnecting ? 'Disconnecting...' : 'Disconnect QuickBooks'}</button></>}</>
+          : canControlConnection ? <a className="primary-button" href="/api/admin/quickbooks/start">Connect QuickBooks</a> : null}
       </div>
     </header>
     {notice && <p className="form-notice" role="status">{notice}</p>}
@@ -1825,7 +1829,7 @@ function QuickBooksPanel({ properties }) {
         <div><strong>{record.connection.companyName || 'Connected QuickBooks company'}</strong><span>{record.connection.lastSyncedAt ? `Last successful sync ${dateTime(record.connection.lastSyncedAt)}` : 'No successful synchronization yet'}</span></div>
         <div className="quickbooks-sync-result"><strong>{syncStatus === 'failed' ? 'Latest sync failed' : syncStatus === 'success' ? 'Latest sync succeeded' : 'Synchronization pending'}</strong><span>{record.connection.lastSyncAttemptAt ? `Attempted ${dateTime(record.connection.lastSyncAttemptAt)}` : 'Run the first synchronization when ready'}</span></div>
       </div>
-      {syncStatus === 'failed' && <div className="quickbooks-sync-error" role="alert"><span>{record.connection.lastSyncError || 'QuickBooks synchronization failed. Try again and review the Worker logs if the problem continues.'}</span>{record.connection.lastSyncError?.toLowerCase().includes('reconnect') && <a href="/api/admin/quickbooks/start">Reconnect QuickBooks</a>}</div>}
+      {syncStatus === 'failed' && <div className="quickbooks-sync-error" role="alert"><span>{record.connection.lastSyncError || 'QuickBooks synchronization failed. Try again and review the Worker logs if the problem continues.'}</span>{canControlConnection && record.connection.lastSyncError?.toLowerCase().includes('reconnect') && <a href="/api/admin/quickbooks/start">Reconnect QuickBooks</a>}</div>}
       <p className="form-context">Balances and invoices are imported snapshots and may not be real-time. The current snapshot contains {record.invoiceSummary.openInvoiceCount} open invoices totaling {new Intl.NumberFormat('en-US', { style: 'currency', currency: 'USD' }).format(record.invoiceSummary.openInvoiceBalance)}. Match each property to one QuickBooks customer; a customer can be linked to only one property.</p>
       <div className="quickbooks-mappings">
         {properties.map((property) => <label key={property.id}><span>{property.address}{property.residentNames ? <small>{property.residentNames}</small> : null}</span>
@@ -1835,7 +1839,7 @@ function QuickBooksPanel({ properties }) {
           </select>
         </label>)}
       </div>
-    </> : <p className="empty-state">Connect the QuickBooks sandbox company, then synchronize its customer list.</p>}
+    </> : <p className="empty-state">{canControlConnection ? 'Connect the QuickBooks company, then synchronize its customer list.' : 'QuickBooks is not connected. A super administrator must establish the connection.'}</p>}
   </section>
 }
 

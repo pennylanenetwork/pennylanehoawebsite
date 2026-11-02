@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict'
 import test from 'node:test'
-import { canAccessMessage, canManageDeposits, canManageReservations } from '../worker/index.js'
+import { canAccessMessage, canManageDeposits, canManageQuickBooks, canManageReservations } from '../worker/index.js'
 
 const user = (fields = {}) => ({
   role: 'admin',
@@ -59,4 +59,12 @@ test('deposit decisions are limited to the three assigned authorities', () => {
   assert.equal(canManageDeposits(user({ role: 'resident', isTreasurer: true })), true)
   assert.equal(canManageDeposits(user({ role: 'admin' })), false)
   assert.equal(canManageDeposits(user()), false)
+})
+
+test('QuickBooks customer linking is limited to the treasurer and super administrator', () => {
+  assert.equal(canManageQuickBooks(user({ role: 'super_admin' })), true)
+  assert.equal(canManageQuickBooks(user({ role: 'resident', isTreasurer: true })), true)
+  assert.equal(canManageQuickBooks(user({ role: 'admin', isTreasurer: true })), true)
+  assert.equal(canManageQuickBooks(user({ role: 'admin' })), false)
+  assert.equal(canManageQuickBooks(user({ role: 'resident', isAmenitiesCoordinator: true })), false)
 })
