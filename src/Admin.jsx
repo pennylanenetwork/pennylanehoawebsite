@@ -1,5 +1,6 @@
 import { useEffect, useState } from 'react'
 import { api } from './api.js'
+import { formatDateTime } from './dateTime.js'
 import './Portal.css'
 
 const emptyForms = {
@@ -42,10 +43,7 @@ const emptyForms = {
 }
 
 function dateTime(value) {
-  return new Intl.DateTimeFormat('en-US', {
-    dateStyle: 'medium',
-    timeStyle: 'short',
-  }).format(new Date(value))
+  return formatDateTime(value)
 }
 
 function calendarDate(value) {

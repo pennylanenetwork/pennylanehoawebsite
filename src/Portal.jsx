@@ -1,5 +1,6 @@
 import { useEffect, useRef, useState } from 'react'
 import { api } from './api.js'
+import { formatDateTime } from './dateTime.js'
 import { POOL_ACKNOWLEDGEMENT, PoolRules } from './PoolRules.jsx'
 import './Portal.css'
 
@@ -65,6 +66,10 @@ export function TurnstileWidget({ onToken, resetKey }) {
   }, [resetKey])
 
   return <div className="turnstile-slot" ref={container} data-action="turnstile-spin-v1" />
+}
+
+function dateTime(value) {
+  return formatDateTime(value)
 }
 
 function PortalHeader({ user }) {
@@ -352,11 +357,6 @@ function ResidentHome({ user, onLogout }) {
   }
 
   const tabs = ['overview', 'calendar', 'documents', 'pool', 'reserve', 'guests', 'messages', ...(user.residentType === 'owner' ? ['household'] : []), 'settings']
-  const dateTime = (value) =>
-    new Intl.DateTimeFormat('en-US', {
-      dateStyle: 'medium',
-      timeStyle: 'short',
-    }).format(new Date(value))
   const clubhouseMinutes = (value) => { const [hours, minutes] = String(value || '00:00').split(':').map(Number); return hours * 60 + minutes }
   const displayMinutes = (value) => { const hours = Math.floor(value / 60); const minutes = value % 60; return `${hours % 12 || 12}${minutes ? `:${String(minutes).padStart(2, '0')}` : ''} ${hours < 12 ? 'AM' : 'PM'}` }
   const opens = clubhouseMinutes(data.clubhouse?.opensAt)
@@ -1000,7 +1000,6 @@ function ResidentMessageThread({ item, dateTime, onReply, onDelete }) {
 }
 
 function CalendarEventList({ events, emptyMessage }) {
-  const dateTime = (value) => new Intl.DateTimeFormat('en-US', { dateStyle: 'medium', timeStyle: 'short' }).format(new Date(value))
   return <div className="data-list">
     {events.map((item) => <div className="calendar-row" key={item.id}>
       <time>{item.allDay ? `${new Intl.DateTimeFormat('en-US', { dateStyle: 'medium', timeZone: 'America/Chicago' }).format(new Date(item.startsAt))} - All day` : dateTime(item.startsAt)}</time>
