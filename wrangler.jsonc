@@ -49,6 +49,6 @@
     "enabled": true
   },
   "vars": {
-    "QUICKBOOKS_ENVIRONMENT": "sandbox"
+    "QUICKBOOKS_ENVIRONMENT": "production"
   }
 }

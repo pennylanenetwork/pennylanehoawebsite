@@ -36,9 +36,9 @@ The Intuit app redirect URI must exactly match:
 https://pennylanehoa.net/api/admin/quickbooks/callback
 ```
 
-During testing, `QUICKBOOKS_ENVIRONMENT` is `sandbox` in `wrangler.jsonc` and the Intuit Development credentials must be installed as Worker secrets. A super administrator completes setup from **Administration > QuickBooks**:
+The production Worker uses `QUICKBOOKS_ENVIRONMENT=production` in `wrangler.jsonc` with Intuit Production credentials installed as Worker secrets. For isolated development testing, change the local environment to `sandbox` and use Intuit Development credentials. A super administrator completes setup from **Administration > QuickBooks**:
 
-1. Select **Connect QuickBooks** and authorize the Intuit sandbox company.
+1. Select **Connect QuickBooks** and authorize the intended QuickBooks company for the configured environment.
 2. Select **Sync now** to import the customer list and balances.
 3. Match a test property to its QuickBooks customer.
 4. Sign in as an owner for that property and confirm the balance appears on the resident overview.
