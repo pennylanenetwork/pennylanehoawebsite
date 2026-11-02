@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict'
 import test from 'node:test'
-import { isRetryableIntuitStatus, normalizeQuickBooksInvoice } from '../worker/index.js'
+import { isRetryableIntuitStatus, normalizeQuickBooksInvoice, quickBooksAdminRedirectUrl } from '../worker/index.js'
 
 test('normalizes an open QuickBooks invoice for storage', () => {
   const invoice = normalizeQuickBooksInvoice({
@@ -59,4 +59,11 @@ test('retries only transient Intuit response statuses', () => {
   assert.equal(isRetryableIntuitStatus(503), true)
   assert.equal(isRetryableIntuitStatus(400), false)
   assert.equal(isRetryableIntuitStatus(401), false)
+})
+
+test('builds an absolute QuickBooks callback redirect for Cloudflare Workers', () => {
+  assert.equal(
+    quickBooksAdminRedirectUrl('https://pennylanehoa.net/api/admin/quickbooks/callback?code=example', 'connected'),
+    'https://pennylanehoa.net/admin?tab=quickbooks&quickbooks=connected',
+  )
 })

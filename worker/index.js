@@ -591,6 +591,10 @@ async function requireSuperAdmin(request, env) {
 const QUICKBOOKS_REDIRECT_URI = 'https://pennylanehoa.net/api/admin/quickbooks/callback'
 const QUICKBOOKS_SCOPE = 'com.intuit.quickbooks.accounting'
 
+export function quickBooksAdminRedirectUrl(requestUrl, result) {
+  return new URL(`/admin?tab=quickbooks&quickbooks=${encodeURIComponent(result)}`, requestUrl).toString()
+}
+
 function requireQuickBooksConfig(env) {
   if (!env.QUICKBOOKS_CLIENT_ID || !env.QUICKBOOKS_CLIENT_SECRET || !env.QUICKBOOKS_TOKEN_KEY) {
     throw new ResponseError('QuickBooks credentials have not been configured.', 503)
@@ -2958,7 +2962,9 @@ async function startQuickBooksAuth(request, env) {
 async function finishQuickBooksAuth(request, env) {
   const admin = await requireSuperAdmin(request, env)
   const url = new URL(request.url)
-  if (url.searchParams.get('error')) return Response.redirect('/admin?tab=quickbooks&quickbooks=denied', 302)
+  if (url.searchParams.get('error')) {
+    return Response.redirect(quickBooksAdminRedirectUrl(request.url, 'denied'), 302)
+  }
   const code = url.searchParams.get('code')
   const realmId = url.searchParams.get('realmId')
   const state = url.searchParams.get('state')
@@ -2979,7 +2985,7 @@ async function finishQuickBooksAuth(request, env) {
   } catch (error) {
     console.error('QuickBooks company name lookup failed', error)
   }
-  return Response.redirect('/admin?tab=quickbooks&quickbooks=connected', 302)
+  return Response.redirect(quickBooksAdminRedirectUrl(request.url, 'connected'), 302)
 }
 
 async function quickBooksAdminStatus(request, env) {
