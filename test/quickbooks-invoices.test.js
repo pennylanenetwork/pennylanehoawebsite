@@ -14,6 +14,10 @@ test('normalizes an open QuickBooks invoice for storage', () => {
     InvoiceLink: 'https://connect.intuit.com/pay/example',
     AllowOnlineACHPayment: true,
     AllowOnlineCreditCardPayment: false,
+    Line: [
+      { DetailType: 'SalesItemLineDetail', Description: '2027 annual assessment', SalesItemLineDetail: { ItemRef: { name: 'HOA Dues' } } },
+      { DetailType: 'SubTotalLineDetail', Amount: 125 },
+    ],
   }, 'sync-1')
 
   assert.deepEqual(invoice, {
@@ -27,8 +31,25 @@ test('normalizes an open QuickBooks invoice for storage', () => {
     invoiceLink: 'https://connect.intuit.com/pay/example',
     allowOnlineAch: true,
     allowOnlineCard: false,
+    lineItems: [{ name: 'HOA Dues', description: '2027 annual assessment' }],
     syncRunId: 'sync-1',
   })
+})
+
+test('keeps only customer-facing QuickBooks sales lines', () => {
+  const invoice = normalizeQuickBooksInvoice({
+    Id: '1', TxnDate: '2026-01-01', TotalAmt: 100, Balance: 100, CustomerRef: { value: '2' },
+    Line: [
+      { DetailType: 'SalesItemLineDetail', Description: '  Annual   dues  ', SalesItemLineDetail: { ItemRef: { name: 'Assessment' } } },
+      { DetailType: 'SalesItemLineDetail', Description: 'Late fee', SalesItemLineDetail: {} },
+      { DetailType: 'DescriptionOnlyLine', Description: 'Internal note' },
+      { DetailType: 'SubTotalLineDetail', Amount: 100 },
+    ],
+  }, 'sync-1')
+  assert.deepEqual(invoice.lineItems, [
+    { name: 'Assessment', description: 'Annual dues' },
+    { name: null, description: 'Late fee' },
+  ])
 })
 
 test('excludes paid or incomplete invoices from the open invoice snapshot', () => {

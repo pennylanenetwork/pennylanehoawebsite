@@ -761,6 +761,14 @@ export function normalizeQuickBooksInvoice(invoice, syncRunId) {
   if (!id || !customerId || !/^\d{4}-\d{2}-\d{2}$/.test(transactionDate)
     || !Number.isFinite(balance) || balance <= 0 || !Number.isFinite(totalAmount)) return null
   const dueDate = String(invoice?.DueDate || '').trim()
+  const lineItems = (Array.isArray(invoice?.Line) ? invoice.Line : [])
+    .filter((line) => line?.DetailType === 'SalesItemLineDetail')
+    .map((line) => {
+      const name = String(line?.SalesItemLineDetail?.ItemRef?.name || '').trim().slice(0, 200) || null
+      const description = String(line?.Description || '').trim().replace(/\s+/g, ' ').slice(0, 1000) || null
+      return name || description ? { name, description } : null
+    })
+    .filter(Boolean)
   return {
     id,
     customerId,
@@ -772,6 +780,7 @@ export function normalizeQuickBooksInvoice(invoice, syncRunId) {
     invoiceLink: safeQuickBooksInvoiceLink(invoice?.InvoiceLink),
     allowOnlineAch: invoice?.AllowOnlineACHPayment === true,
     allowOnlineCard: invoice?.AllowOnlineCreditCardPayment === true,
+    lineItems,
     syncRunId,
   }
 }
@@ -1032,7 +1041,8 @@ async function portalDashboard(request, env) {
       quickbooks_invoices.total_amount AS totalAmount, quickbooks_invoices.balance,
       quickbooks_invoices.invoice_link AS invoiceLink,
       quickbooks_invoices.allow_online_ach AS allowOnlineAch,
-      quickbooks_invoices.allow_online_card AS allowOnlineCard
+      quickbooks_invoices.allow_online_card AS allowOnlineCard,
+      quickbooks_invoices.line_items_json AS lineItemsJson
       FROM properties INNER JOIN quickbooks_invoices
         ON quickbooks_invoices.customer_id = properties.quickbooks_customer_id
       WHERE properties.id = ?1 AND ?2 = 'owner'
@@ -1057,7 +1067,12 @@ async function portalDashboard(request, env) {
     boardMembers: boardMembers.results,
     clubhouse: clubhouse.results[0],
     duesAccount: duesAccount.results[0] || null,
-    duesInvoices: user.residentType === 'owner' ? duesInvoices.results : [],
+    duesInvoices: user.residentType === 'owner' ? duesInvoices.results.map((invoice) => {
+      let lineItems = []
+      try { lineItems = JSON.parse(invoice.lineItemsJson || '[]') } catch { lineItems = [] }
+      const { lineItemsJson: _lineItemsJson, ...record } = invoice
+      return { ...record, lineItems: Array.isArray(lineItems) ? lineItems : [] }
+    }) : [],
   })
 }
 
@@ -3036,17 +3051,18 @@ async function syncQuickBooksCustomers(request, env) {
       .bind(String(customer.Id), String(customer.DisplayName || `Customer ${customer.Id}`), Number(customer.Balance || 0), customer.Active === false ? 0 : 1))
     const invoiceStatements = invoices.map((invoice) => env.DB.prepare(`INSERT INTO quickbooks_invoices
       (id, customer_id, document_number, transaction_date, due_date, total_amount, balance,
-        invoice_link, allow_online_ach, allow_online_card, sync_run_id, synced_at)
-      VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, CURRENT_TIMESTAMP)
+        invoice_link, allow_online_ach, allow_online_card, line_items_json, sync_run_id, synced_at)
+      VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, CURRENT_TIMESTAMP)
       ON CONFLICT (id) DO UPDATE SET customer_id = excluded.customer_id,
         document_number = excluded.document_number, transaction_date = excluded.transaction_date,
         due_date = excluded.due_date, total_amount = excluded.total_amount, balance = excluded.balance,
         invoice_link = excluded.invoice_link, allow_online_ach = excluded.allow_online_ach,
-        allow_online_card = excluded.allow_online_card, sync_run_id = excluded.sync_run_id,
+        allow_online_card = excluded.allow_online_card, line_items_json = excluded.line_items_json,
+        sync_run_id = excluded.sync_run_id,
         synced_at = CURRENT_TIMESTAMP`)
       .bind(invoice.id, invoice.customerId, invoice.documentNumber, invoice.transactionDate, invoice.dueDate,
         invoice.totalAmount, invoice.balance, invoice.invoiceLink, invoice.allowOnlineAch ? 1 : 0,
-        invoice.allowOnlineCard ? 1 : 0, invoice.syncRunId))
+        invoice.allowOnlineCard ? 1 : 0, JSON.stringify(invoice.lineItems), invoice.syncRunId))
     await env.DB.batch([
       ...customerStatements,
       ...invoiceStatements,

@@ -471,6 +471,10 @@ function ResidentHome({ user, onLogout }) {
                   <div className="invoice-identity"><strong>Invoice {invoice.documentNumber || invoice.id}</strong><span className={overdue ? 'is-overdue' : ''}>{overdue ? 'Past due' : 'Open'}</span><small>Issued {invoiceDate(invoice.transactionDate)}{invoice.dueDate ? ` · Due ${invoiceDate(invoice.dueDate)}` : ''}</small></div>
                   <div className="invoice-amount"><small>Amount remaining</small><strong>{new Intl.NumberFormat('en-US', { style: 'currency', currency: 'USD' }).format(invoice.balance)}</strong><span>of {new Intl.NumberFormat('en-US', { style: 'currency', currency: 'USD' }).format(invoice.totalAmount)}</span></div>
                   {invoice.invoiceLink ? <a className="primary-button invoice-pay-link" href={invoice.invoiceLink} target="_blank" rel="noreferrer">View and pay in QuickBooks</a> : <span className="invoice-link-unavailable">Payment link unavailable</span>}
+                  {invoice.lineItems?.length > 0 && <div className="invoice-line-items">{invoice.lineItems.map((line, index) => <div className="invoice-line-item" key={`${invoice.id}-${index}`}>
+                    <span>{line.name || 'Invoice item'}</span>
+                    {line.description && line.description !== line.name && <small>{line.description}</small>}
+                  </div>)}</div>}
                 </article>
               })}
               {data.duesInvoices.length === 0 && <p className="empty-state">No open invoices were included in the latest successful synchronization.</p>}
