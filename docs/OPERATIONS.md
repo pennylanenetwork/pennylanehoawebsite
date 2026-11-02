@@ -39,21 +39,21 @@ https://pennylanehoa.net/api/admin/quickbooks/callback
 The production Worker uses `QUICKBOOKS_ENVIRONMENT=production` in `wrangler.jsonc` with Intuit Production credentials installed as Worker secrets. For isolated development testing, change the local environment to `sandbox` and use Intuit Development credentials. A super administrator completes setup from **Administration > QuickBooks**:
 
 1. Select **Connect QuickBooks** and authorize the intended QuickBooks company for the configured environment.
-2. Select **Sync now** to import the customer list and balances.
+2. Select **Sync now** to import customers, balances, open invoices, payment links, and invoice line descriptions.
 3. Match a test property to its QuickBooks customer.
-4. Sign in as an owner for that property and confirm the balance appears on the resident overview.
+4. Sign in as an owner for that property and confirm the balance and invoices appear under **Dues**.
 5. Sign in as a renter and confirm the balance does not appear.
 
 Cloudflare runs an automatic synchronization at `00:00` and `12:00` UTC each day, approximately 6-7 AM and 6-7 PM in Lindale depending on daylight saving time. A super administrator or treasurer may also select **Sync now** to refresh immediately. Each successful synchronization refreshes every imported balance, open invoice, payment link, and customer-facing invoice line description. Paid or removed invoices disappear only after a successful synchronization. The administration page records the latest attempt, whether it succeeded or failed, and the last successful synchronization. Residents see the last successful synchronization time and a notice that balances and invoices are not real-time. Mapping changes are recorded in the audit log.
 
 Selecting **Disconnect QuickBooks** requires confirmation and is restricted to super administrators. The Worker first revokes the stored refresh token with Intuit. Only after Intuit confirms revocation does one database batch remove the encrypted OAuth connection, pending OAuth states, imported customers, balances, invoices, payment links, and every property mapping. The action is recorded in the audit log. If Intuit does not confirm revocation, the local connection and data are retained so an administrator can retry safely.
 
-Before switching to the live QuickBooks company:
+Production QuickBooks verification checklist:
 
-1. Complete Intuit's production app requirements and add the same redirect URI under the Production configuration.
-2. Replace the two QuickBooks Worker secrets with the Production Client ID and Client Secret.
-3. Change `QUICKBOOKS_ENVIRONMENT` in `wrangler.jsonc` from `sandbox` to `production` and deploy.
-4. Connect the live HOA company, synchronize, and verify one mapping before mapping the remaining properties.
+1. Confirm Intuit's production app requirements remain complete and the Production configuration contains the redirect URI above.
+2. Confirm the Worker secrets contain the current Production Client ID and Client Secret.
+3. Confirm `QUICKBOOKS_ENVIRONMENT=production` in `wrangler.jsonc` before every production deployment.
+4. Confirm the intended live HOA company is connected, synchronize, and verify one mapping before changing mappings in bulk.
 5. Confirm balances with the treasurer before announcing resident access.
 
 ## Deployment ownership and verification

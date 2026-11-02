@@ -51,7 +51,7 @@ An administrator review does not publish a reservation. The resident continues t
 | Administrator | Overview, accounts, properties, pool access, website content, quick links, announcements, events, documents, photos, and reservation management |
 | Board member | General, maintenance, and board messages |
 | ACC Committee member | Architectural / ACC messages |
-| Treasurer | Reservation list, deposit refund/retain controls, and treasurer messages |
+| Treasurer | Reservation list, deposit refund/retain controls, treasurer messages, and QuickBooks customer synchronization and property mapping |
 | Amenities coordinator | Reservation review, approval/denial, cancellation, clubhouse settings, deposit refund/retain controls, and amenities messages |
 
 ### Permission details
@@ -60,6 +60,8 @@ An administrator review does not publish a reservation. The resident continues t
 - A normal administrator can open the Messages section but sees only categories granted by an additional committee assignment.
 - Amenities coordinators do not need the administrator role to manage clubhouse reservations and deposits.
 - Treasurers can view reservations and manage deposits but cannot approve requests unless they are also an administrator or amenities coordinator.
+- Super administrators and treasurers can view imported QuickBooks customers, run a synchronization, and link or unlink properties. Only super administrators can connect, reconnect, or disconnect the Intuit company.
+- QuickBooks balances and invoices are visible only to resident accounts marked as property owners. Renter and household-member accounts do not receive billing data.
 - Board and ACC assignments alone do not grant access to accounts, properties, events, documents, photos, or website management.
 - President, vice president, secretary, and treasurer assignments also confer board-member status.
 - Accounts with multiple assignments receive the combined permissions and message access of those assignments.

@@ -2,6 +2,17 @@
 
 Public website and resident services for Penny Lane Estates Homeowners Association.
 
+## Current features
+
+- Public HOA information, events, documents, quick links, contact form, and photo gallery
+- Approved resident registration with Google, Yahoo, or emailed sign-in codes
+- Resident announcements, governing documents and document search, messaging, pool information, guest registration, and clubhouse reservations
+- Stripe-hosted clubhouse security deposits with administrative approval, refund, and retention workflows
+- Property, account, pool-card, communications, guest, reservation, website-content, and role management
+- Owner-only QuickBooks Online balances, open invoices, product/service descriptions, and Intuit-hosted payment links
+
+Material releases are recorded in [`CHANGELOG.md`](CHANGELOG.md).
+
 ## Local development
 
 ```sh
@@ -44,7 +55,7 @@ npm run cf:dev
 npm run db:migrate:remote
 ```
 
-The initial migration creates HOA phases and 101 active properties. Property write operations will be added only after administrator authentication and authorization are available.
+The schema includes HOA phases, properties, resident relationships, and the operational records used by the public site and portals. New schema changes must be added as sequential migrations and applied locally before production.
 
 ## Operations
 
