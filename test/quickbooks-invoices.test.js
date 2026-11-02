@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict'
 import test from 'node:test'
-import { isRetryableIntuitStatus, normalizeQuickBooksInvoice, quickBooksAdminRedirectUrl } from '../worker/index.js'
+import { isRetryableIntuitStatus, normalizeQuickBooksInvoice, quickBooksAdminRedirectUrl, quickBooksPaidInvoiceCutoff } from '../worker/index.js'
 
 test('normalizes an open QuickBooks invoice for storage', () => {
   const invoice = normalizeQuickBooksInvoice({
@@ -32,6 +32,7 @@ test('normalizes an open QuickBooks invoice for storage', () => {
     allowOnlineAch: true,
     allowOnlineCard: false,
     lineItems: [{ name: 'HOA Dues', description: '2027 annual assessment' }],
+    status: 'open',
     syncRunId: 'sync-1',
   })
 })
@@ -52,13 +53,31 @@ test('keeps only customer-facing QuickBooks sales lines', () => {
   ])
 })
 
-test('excludes paid or incomplete invoices from the open invoice snapshot', () => {
+test('keeps paid invoices in the paid snapshot', () => {
+  const invoice = normalizeQuickBooksInvoice({
+    Id: '1', TxnDate: '2026-01-01', DueDate: '2026-01-31', TotalAmt: 100, Balance: 0,
+    CustomerRef: { value: '2' },
+  }, 'sync-1', 'paid')
+  assert.equal(invoice.status, 'paid')
+  assert.equal(invoice.balance, 0)
+  assert.equal(invoice.totalAmount, 100)
+})
+
+test('excludes invoices with balances that do not match the snapshot status', () => {
   assert.equal(normalizeQuickBooksInvoice({
     Id: '1', TxnDate: '2026-01-01', TotalAmt: 100, Balance: 0, CustomerRef: { value: '2' },
   }, 'sync-1'), null)
   assert.equal(normalizeQuickBooksInvoice({
+    Id: '1', TxnDate: '2026-01-01', TotalAmt: 100, Balance: 25, CustomerRef: { value: '2' },
+  }, 'sync-1', 'paid'), null)
+  assert.equal(normalizeQuickBooksInvoice({
     Id: '1', TxnDate: '2026-01-01', TotalAmt: 100, Balance: 100,
   }, 'sync-1'), null)
+})
+
+test('uses a rolling 24-month invoice-date cutoff', () => {
+  assert.equal(quickBooksPaidInvoiceCutoff(new Date('2026-11-02T18:00:00.000Z')), '2024-11-02')
+  assert.equal(quickBooksPaidInvoiceCutoff(new Date('2024-02-29T12:00:00.000Z')), '2022-02-28')
 })
 
 test('stores only HTTPS invoice links hosted by Intuit', () => {

@@ -752,14 +752,17 @@ function safeQuickBooksInvoiceLink(value) {
   }
 }
 
-export function normalizeQuickBooksInvoice(invoice, syncRunId) {
+export function normalizeQuickBooksInvoice(invoice, syncRunId, status = 'open') {
   const id = String(invoice?.Id || '').trim()
   const customerId = String(invoice?.CustomerRef?.value || '').trim()
   const transactionDate = String(invoice?.TxnDate || '').trim()
   const balance = Number(invoice?.Balance)
   const totalAmount = Number(invoice?.TotalAmt)
   if (!id || !customerId || !/^\d{4}-\d{2}-\d{2}$/.test(transactionDate)
-    || !Number.isFinite(balance) || balance <= 0 || !Number.isFinite(totalAmount)) return null
+    || !Number.isFinite(balance) || !Number.isFinite(totalAmount)
+    || !['open', 'paid'].includes(status)
+    || (status === 'open' && balance <= 0)
+    || (status === 'paid' && (balance !== 0 || totalAmount <= 0))) return null
   const dueDate = String(invoice?.DueDate || '').trim()
   const lineItems = (Array.isArray(invoice?.Line) ? invoice.Line : [])
     .filter((line) => line?.DetailType === 'SalesItemLineDetail')
@@ -781,22 +784,41 @@ export function normalizeQuickBooksInvoice(invoice, syncRunId) {
     allowOnlineAch: invoice?.AllowOnlineACHPayment === true,
     allowOnlineCard: invoice?.AllowOnlineCreditCardPayment === true,
     lineItems,
+    status,
     syncRunId,
   }
 }
 
-async function quickBooksOpenInvoices(env) {
+async function quickBooksInvoiceQuery(env, whereClause, description) {
   const invoices = []
   let startPosition = 1
   while (startPosition <= 5000) {
-    const query = encodeURIComponent(`select * from Invoice where Balance > '0' startposition ${startPosition} maxresults 1000`)
+    const query = encodeURIComponent(`select * from Invoice where ${whereClause} startposition ${startPosition} maxresults 1000`)
     const result = await quickBooksFetch(env, `/v3/company/{realmId}/query?query=${query}&include=invoiceLink`)
     const page = result.QueryResponse?.Invoice || []
     invoices.push(...page)
     if (page.length < 1000) return invoices
     startPosition += page.length
   }
-  throw new ResponseError('QuickBooks returned too many open invoices to synchronize safely.', 502)
+  throw new ResponseError(`QuickBooks returned too many ${description} invoices to synchronize safely.`, 502)
+}
+
+async function quickBooksOpenInvoices(env) {
+  return quickBooksInvoiceQuery(env, "Balance > '0'", 'open')
+}
+
+export function quickBooksPaidInvoiceCutoff(now = new Date()) {
+  if (!(now instanceof Date) || !Number.isFinite(now.getTime())) throw new TypeError('A valid date is required.')
+  const year = now.getUTCFullYear()
+  const month = now.getUTCMonth() - 24
+  const day = now.getUTCDate()
+  const lastDay = new Date(Date.UTC(year, month + 1, 0)).getUTCDate()
+  return new Date(Date.UTC(year, month, Math.min(day, lastDay))).toISOString().slice(0, 10)
+}
+
+async function quickBooksPaidInvoices(env) {
+  const cutoff = quickBooksPaidInvoiceCutoff()
+  return quickBooksInvoiceQuery(env, `Balance = '0' and TxnDate >= '${cutoff}'`, 'paid')
 }
 
 export function canAccessMessage(user, category) {
@@ -1043,6 +1065,7 @@ async function portalDashboard(request, env) {
     env.DB.prepare(`SELECT quickbooks_invoices.id, quickbooks_invoices.document_number AS documentNumber,
       quickbooks_invoices.transaction_date AS transactionDate, quickbooks_invoices.due_date AS dueDate,
       quickbooks_invoices.total_amount AS totalAmount, quickbooks_invoices.balance,
+      quickbooks_invoices.status,
       quickbooks_invoices.invoice_link AS invoiceLink,
       quickbooks_invoices.allow_online_ach AS allowOnlineAch,
       quickbooks_invoices.allow_online_card AS allowOnlineCard,
@@ -1050,7 +1073,8 @@ async function portalDashboard(request, env) {
       FROM properties INNER JOIN quickbooks_invoices
         ON quickbooks_invoices.customer_id = properties.quickbooks_customer_id
       WHERE properties.id = ?1 AND ?2 = 'owner'
-      ORDER BY COALESCE(quickbooks_invoices.due_date, quickbooks_invoices.transaction_date),
+      ORDER BY quickbooks_invoices.status,
+        COALESCE(quickbooks_invoices.due_date, quickbooks_invoices.transaction_date),
         quickbooks_invoices.document_number`).bind(user.propertyId, user.residentType),
   ])
   const repliesByMessage = messageReplies.results.reduce((result, reply) => {
@@ -1058,6 +1082,12 @@ async function portalDashboard(request, env) {
     result[reply.messageId].push(reply)
     return result
   }, {})
+  const normalizedDuesInvoices = user.residentType === 'owner' ? duesInvoices.results.map((invoice) => {
+    let lineItems = []
+    try { lineItems = JSON.parse(invoice.lineItemsJson || '[]') } catch { lineItems = [] }
+    const { lineItemsJson: _lineItemsJson, ...record } = invoice
+    return { ...record, lineItems: Array.isArray(lineItems) ? lineItems : [] }
+  }) : []
   return json({
     announcements: announcements.results,
     events: events.results,
@@ -1071,12 +1101,10 @@ async function portalDashboard(request, env) {
     boardMembers: boardMembers.results,
     clubhouse: clubhouse.results[0],
     duesAccount: duesAccount.results[0] || null,
-    duesInvoices: user.residentType === 'owner' ? duesInvoices.results.map((invoice) => {
-      let lineItems = []
-      try { lineItems = JSON.parse(invoice.lineItemsJson || '[]') } catch { lineItems = [] }
-      const { lineItemsJson: _lineItemsJson, ...record } = invoice
-      return { ...record, lineItems: Array.isArray(lineItems) ? lineItems : [] }
-    }) : [],
+    duesInvoices: normalizedDuesInvoices.filter((invoice) => invoice.status === 'open'),
+    duesPaidInvoices: normalizedDuesInvoices
+      .filter((invoice) => invoice.status === 'paid')
+      .sort((left, right) => right.transactionDate.localeCompare(left.transactionDate)),
   })
 }
 
@@ -3035,8 +3063,11 @@ async function quickBooksAdminStatus(request, env) {
       properties.street_number || ' ' || properties.street_name || ' ' || properties.street_suffix AS address,
       properties.quickbooks_customer_id AS customerId FROM properties
       WHERE properties.quickbooks_customer_id IS NOT NULL ORDER BY properties.street_name, properties.street_number`),
-    env.DB.prepare(`SELECT COUNT(*) AS openInvoiceCount,
-      COALESCE(SUM(balance), 0) AS openInvoiceBalance FROM quickbooks_invoices`),
+    env.DB.prepare(`SELECT
+      COALESCE(SUM(CASE WHEN status = 'open' THEN 1 ELSE 0 END), 0) AS openInvoiceCount,
+      COALESCE(SUM(CASE WHEN status = 'open' THEN balance ELSE 0 END), 0) AS openInvoiceBalance,
+      COALESCE(SUM(CASE WHEN status = 'paid' THEN 1 ELSE 0 END), 0) AS paidInvoiceCount
+      FROM quickbooks_invoices`),
   ])
   return json({ connection: connection.results[0] || null, customers: customers.results, mappings: mappings.results,
     invoiceSummary: invoiceSummary.results[0] })
@@ -3047,9 +3078,16 @@ async function syncQuickBooksData(env) {
     const customerQuery = encodeURIComponent('select * from Customer startposition 1 maxresults 1000')
     const customerResult = await quickBooksFetch(env, `/v3/company/{realmId}/query?query=${customerQuery}`)
     const customers = customerResult.QueryResponse?.Customer || []
-    const invoiceResult = await quickBooksOpenInvoices(env)
+    const [openInvoiceResult, paidInvoiceResult] = await Promise.all([
+      quickBooksOpenInvoices(env),
+      quickBooksPaidInvoices(env),
+    ])
     const syncRunId = crypto.randomUUID()
-    const invoices = invoiceResult.map((invoice) => normalizeQuickBooksInvoice(invoice, syncRunId)).filter(Boolean)
+    const openInvoices = openInvoiceResult
+      .map((invoice) => normalizeQuickBooksInvoice(invoice, syncRunId, 'open')).filter(Boolean)
+    const paidInvoices = paidInvoiceResult
+      .map((invoice) => normalizeQuickBooksInvoice(invoice, syncRunId, 'paid')).filter(Boolean)
+    const invoices = [...openInvoices, ...paidInvoices]
     const customerStatements = customers.map((customer) => env.DB.prepare(`INSERT INTO quickbooks_customers
       (id, display_name, balance, active, synced_at) VALUES (?1, ?2, ?3, ?4, CURRENT_TIMESTAMP)
       ON CONFLICT (id) DO UPDATE SET display_name = excluded.display_name, balance = excluded.balance,
@@ -3057,18 +3095,18 @@ async function syncQuickBooksData(env) {
       .bind(String(customer.Id), String(customer.DisplayName || `Customer ${customer.Id}`), Number(customer.Balance || 0), customer.Active === false ? 0 : 1))
     const invoiceStatements = invoices.map((invoice) => env.DB.prepare(`INSERT INTO quickbooks_invoices
       (id, customer_id, document_number, transaction_date, due_date, total_amount, balance,
-        invoice_link, allow_online_ach, allow_online_card, line_items_json, sync_run_id, synced_at)
-      VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, CURRENT_TIMESTAMP)
+        invoice_link, allow_online_ach, allow_online_card, line_items_json, status, sync_run_id, synced_at)
+      VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, CURRENT_TIMESTAMP)
       ON CONFLICT (id) DO UPDATE SET customer_id = excluded.customer_id,
         document_number = excluded.document_number, transaction_date = excluded.transaction_date,
         due_date = excluded.due_date, total_amount = excluded.total_amount, balance = excluded.balance,
         invoice_link = excluded.invoice_link, allow_online_ach = excluded.allow_online_ach,
         allow_online_card = excluded.allow_online_card, line_items_json = excluded.line_items_json,
-        sync_run_id = excluded.sync_run_id,
+        status = excluded.status, sync_run_id = excluded.sync_run_id,
         synced_at = CURRENT_TIMESTAMP`)
       .bind(invoice.id, invoice.customerId, invoice.documentNumber, invoice.transactionDate, invoice.dueDate,
         invoice.totalAmount, invoice.balance, invoice.invoiceLink, invoice.allowOnlineAch ? 1 : 0,
-        invoice.allowOnlineCard ? 1 : 0, JSON.stringify(invoice.lineItems), invoice.syncRunId))
+        invoice.allowOnlineCard ? 1 : 0, JSON.stringify(invoice.lineItems), invoice.status, invoice.syncRunId))
     await env.DB.batch([
       ...customerStatements,
       ...invoiceStatements,
@@ -3077,7 +3115,7 @@ async function syncQuickBooksData(env) {
         last_sync_attempt_at = CURRENT_TIMESTAMP, last_sync_status = 'success', last_sync_error = NULL,
         updated_at = CURRENT_TIMESTAMP WHERE id = 1`),
     ])
-    return { synced: customers.length, invoices: invoices.length }
+    return { synced: customers.length, invoices: openInvoices.length, paidInvoices: paidInvoices.length }
   } catch (error) {
     const message = error instanceof ResponseError ? error.message : 'QuickBooks synchronization failed.'
     await env.DB.prepare(`UPDATE quickbooks_connections SET last_sync_attempt_at = CURRENT_TIMESTAMP,
@@ -3312,7 +3350,8 @@ export default {
         message: 'Scheduled QuickBooks synchronization completed',
         cron: controller.cron,
         customers: result.synced,
-        invoices: result.invoices,
+        openInvoices: result.invoices,
+        paidInvoices: result.paidInvoices,
       }))
     } catch (error) {
       console.error(JSON.stringify({

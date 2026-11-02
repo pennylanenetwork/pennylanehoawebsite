@@ -122,6 +122,47 @@ function lindaleDate() {
   return `${values.year}-${values.month}-${values.day}`
 }
 
+const invoiceCurrency = new Intl.NumberFormat('en-US', { style: 'currency', currency: 'USD' })
+
+function InvoiceRecord({ invoice, paid = false }) {
+  const overdue = !paid && invoice.dueDate && invoice.dueDate < lindaleDate()
+  return <article className="invoice-row">
+    <div className="invoice-identity">
+      <strong>Invoice {invoice.documentNumber || invoice.id}</strong>
+      <span className={paid ? 'is-paid' : overdue ? 'is-overdue' : ''}>{paid ? 'Paid' : overdue ? 'Past due' : 'Open'}</span>
+      <small>Issued {invoiceDate(invoice.transactionDate)}{invoice.dueDate ? ` · Due ${invoiceDate(invoice.dueDate)}` : ''}</small>
+    </div>
+    <div className="invoice-amount">
+      <small>{paid ? 'Invoice total' : 'Amount remaining'}</small>
+      <strong>{invoiceCurrency.format(paid ? invoice.totalAmount : invoice.balance)}</strong>
+      <span>{paid ? 'Paid in full' : `of ${invoiceCurrency.format(invoice.totalAmount)}`}</span>
+    </div>
+    {invoice.invoiceLink ? <a className="primary-button invoice-pay-link" href={invoice.invoiceLink} target="_blank" rel="noreferrer">{paid ? 'View invoice in QuickBooks' : 'View and pay in QuickBooks'}</a> : <span className="invoice-link-unavailable">Invoice link unavailable</span>}
+    {invoice.lineItems?.length > 0 && <div className="invoice-line-items">{invoice.lineItems.map((line, index) => <div className="invoice-line-item" key={`${invoice.id}-${index}`}>
+      <span>{line.name || 'Invoice item'}</span>
+      {line.description && line.description !== line.name && <small>{line.description}</small>}
+    </div>)}</div>}
+  </article>
+}
+
+function PaidInvoiceHistory({ invoices }) {
+  const years = invoices.reduce((result, invoice) => {
+    const year = invoice.transactionDate.slice(0, 4)
+    if (!result[year]) result[year] = []
+    result[year].push(invoice)
+    return result
+  }, {})
+  return <section className="invoice-summary paid-invoice-history" aria-labelledby="paid-invoices-title">
+    <header><div><p className="portal-kicker">Payment history</p><h2 id="paid-invoices-title">Paid invoices</h2></div><span>{invoices.length}</span></header>
+    <p className="invoice-disclaimer">Paid invoices issued during the last 24 months are imported from QuickBooks and grouped by invoice year.</p>
+    {Object.keys(years).sort((left, right) => right.localeCompare(left)).map((year) => <section className="paid-invoice-year" key={year}>
+      <h3>{year}</h3>
+      <div className="invoice-list">{years[year].map((invoice) => <InvoiceRecord invoice={invoice} paid key={invoice.id} />)}</div>
+    </section>)}
+    {invoices.length === 0 && <p className="empty-state">No paid invoices from the last 24 months were included in the latest successful synchronization.</p>}
+  </section>
+}
+
 function ResidentHome({ user, onLogout }) {
   const [tab, setTab] = useState('overview')
   const [data, setData] = useState({
@@ -138,6 +179,7 @@ function ResidentHome({ user, onLogout }) {
     clubhouse: null,
     duesAccount: null,
     duesInvoices: [],
+    duesPaidInvoices: [],
   })
   const emptyReservation = {
     eventName: '',
@@ -465,21 +507,11 @@ function ResidentHome({ user, onLogout }) {
             <header><div><p className="portal-kicker">Billing details</p><h2 id="open-invoices-title">Open invoices</h2></div><span>{data.duesInvoices.length}</span></header>
             <p className="invoice-disclaimer">These are imported QuickBooks records and may not reflect recent payments. Payments open on an Intuit-hosted page; this website does not collect your card or bank information.</p>
             <div className="invoice-list">
-              {data.duesInvoices.map((invoice) => {
-                const overdue = invoice.dueDate && invoice.dueDate < lindaleDate()
-                return <article className="invoice-row" key={invoice.id}>
-                  <div className="invoice-identity"><strong>Invoice {invoice.documentNumber || invoice.id}</strong><span className={overdue ? 'is-overdue' : ''}>{overdue ? 'Past due' : 'Open'}</span><small>Issued {invoiceDate(invoice.transactionDate)}{invoice.dueDate ? ` · Due ${invoiceDate(invoice.dueDate)}` : ''}</small></div>
-                  <div className="invoice-amount"><small>Amount remaining</small><strong>{new Intl.NumberFormat('en-US', { style: 'currency', currency: 'USD' }).format(invoice.balance)}</strong><span>of {new Intl.NumberFormat('en-US', { style: 'currency', currency: 'USD' }).format(invoice.totalAmount)}</span></div>
-                  {invoice.invoiceLink ? <a className="primary-button invoice-pay-link" href={invoice.invoiceLink} target="_blank" rel="noreferrer">View and pay in QuickBooks</a> : <span className="invoice-link-unavailable">Payment link unavailable</span>}
-                  {invoice.lineItems?.length > 0 && <div className="invoice-line-items">{invoice.lineItems.map((line, index) => <div className="invoice-line-item" key={`${invoice.id}-${index}`}>
-                    <span>{line.name || 'Invoice item'}</span>
-                    {line.description && line.description !== line.name && <small>{line.description}</small>}
-                  </div>)}</div>}
-                </article>
-              })}
+              {data.duesInvoices.map((invoice) => <InvoiceRecord invoice={invoice} key={invoice.id} />)}
               {data.duesInvoices.length === 0 && <p className="empty-state">No open invoices were included in the latest successful synchronization.</p>}
             </div>
           </section>}
+          {data.duesAccount && <PaidInvoiceHistory invoices={data.duesPaidInvoices} />}
         </section>}
         {tab === 'calendar' && <CalendarView events={data.events} />}
         {tab === 'documents' && (

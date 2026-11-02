@@ -4,6 +4,18 @@ This file records material changes to the Penny Lane Estates HOA website and por
 
 ## Unreleased
 
+## 2026-11-02
+
+### Added
+
+- Added an owner-only paid invoice history to the Dues tab covering a rolling 24-month invoice-date window.
+- Grouped paid invoices by year while preserving the invoice number, issue and due dates, total, product/service descriptions, and available Intuit invoice link.
+
+### Changed
+
+- Updated QuickBooks synchronization and administration totals to report open and paid invoice snapshots separately.
+- Updated QuickBooks retention and operations documentation for the paid invoice history.
+
 ## 2026-11-01
 
 ### Added

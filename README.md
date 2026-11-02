@@ -10,7 +10,7 @@ Public website and resident services for Penny Lane Estates Homeowners Associati
 - Responsive resident and administration workspaces with a desktop month calendar and adjacent monthly event list that stack on smaller screens
 - Stripe-hosted clubhouse security deposits with administrative approval, refund, and retention workflows
 - Property, account, pool-card, communications, guest, reservation, website-content, and role management
-- Owner-only QuickBooks Online balances, open invoices, product/service descriptions, and Intuit-hosted payment links
+- Owner-only QuickBooks Online balances, open invoices, 24 months of paid invoice history, product/service descriptions, and Intuit-hosted invoice links
 
 Material releases are recorded in [`CHANGELOG.md`](CHANGELOG.md).
 
@@ -44,7 +44,7 @@ Cloudflare resource bindings for D1, R2, Turnstile, email, OAuth, and payment se
 
 The resident governing-documents page also uses the Workers AI binding. It uses a model available on Workers Free, retrieves only published governing sections, and limits questions to 10 per resident and 100 site-wide per UTC day. When the daily AI allowance or a question limit is reached, the ordinary document search remains available. Apply migration `0028_governing_ai_usage.sql` before deploying this feature. The AI binding is not required for the local Vite-only preview; use `npm run cf:dev` to test the Worker endpoint.
 
-QuickBooks Online customer balances can be synchronized and mapped to HOA properties by a super administrator or treasurer. The read-only integration runs automatically twice daily, supports an immediate manual sync, uses encrypted OAuth tokens, and shows mapped billing data only to resident accounts marked as property owners. Intuit connection controls remain restricted to super administrators. Setup, secret names, synchronization, and operating procedures are documented in [`docs/OPERATIONS.md`](docs/OPERATIONS.md).
+QuickBooks Online customer balances can be synchronized and mapped to HOA properties by a super administrator or treasurer. The read-only integration runs automatically twice daily, supports an immediate manual sync, uses encrypted OAuth tokens, and shows mapped billing data only to resident accounts marked as property owners. Paid invoices are retained as a rolling 24-month snapshot based on invoice date and grouped by year in the Dues tab. Intuit connection controls remain restricted to super administrators. Setup, secret names, synchronization, and operating procedures are documented in [`docs/OPERATIONS.md`](docs/OPERATIONS.md).
 
 ## Calendar and clubhouse scheduling
 
