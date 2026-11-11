@@ -992,7 +992,7 @@ async function clubhouseAvailability(env, startsAt, endsAt, excludeReservationId
 
 async function portalDashboard(request, env) {
   const user = await requireUser(request, env)
-  const [announcements, events, documents, reservations, messages, messageReplies, guests, household, poolCards, poolAgreements, boardMembers, clubhouse, duesAccount, duesInvoices] = await env.DB.batch([
+  const [announcements, events, documents, documentCategories, reservations, messages, messageReplies, guests, household, poolCards, poolAgreements, boardMembers, clubhouse, duesAccount, duesInvoices] = await env.DB.batch([
     env.DB.prepare(`SELECT id, title, body, audience, published_at AS publishedAt FROM announcements
       WHERE published_at <= CURRENT_TIMESTAMP ORDER BY published_at DESC LIMIT 20`),
     env.DB.prepare(`SELECT id,
@@ -1010,6 +1010,13 @@ async function portalDashboard(request, env) {
       ORDER BY startsAt LIMIT 100`),
     env.DB.prepare(`SELECT id, title, description, document_url AS url, category, audience
       FROM documents ORDER BY category, title`),
+    env.DB.prepare(`SELECT document_categories.id, document_categories.name,
+      document_categories.sort_order AS sortOrder, document_categories.is_standard AS isStandard
+      FROM document_categories
+      WHERE document_categories.name = 'Governing Documents' COLLATE NOCASE
+        OR EXISTS (SELECT 1 FROM documents
+          WHERE documents.category = document_categories.name COLLATE NOCASE)
+      ORDER BY document_categories.sort_order, document_categories.name`),
     env.DB.prepare(`SELECT id, event_name AS eventName, event_type AS eventType, starts_at AS startsAt, ends_at AS endsAt,
       attendee_count AS attendeeCount, cleaning_method AS cleaningMethod, notes, status,
       decision_reason AS decisionReason, reviewed_at AS reviewedAt, deposit_status AS depositStatus,
@@ -1092,6 +1099,7 @@ async function portalDashboard(request, env) {
     announcements: announcements.results,
     events: events.results,
     documents: documents.results,
+    documentCategories: documentCategories.results,
     reservations: reservations.results,
     messages: messages.results.map((message) => ({ ...message, replies: repliesByMessage[message.id] || [] })),
     guests: guests.results,
@@ -1364,7 +1372,7 @@ async function adminDashboard(request, env) {
   const fullAdmin = ['admin', 'super_admin'].includes(admin.role)
   const canViewReservations = fullAdmin || Boolean(admin.isTreasurer) || Boolean(admin.isAmenitiesCoordinator)
   const canManageClubhouse = fullAdmin || Boolean(admin.isAmenitiesCoordinator)
-  const [properties, phases, announcements, events, documents, reservations, messages, messageReplies, photos, guests, poolCards,
+  const [properties, phases, announcements, events, documents, documentCategories, reservations, messages, messageReplies, photos, guests, poolCards,
     clubhouse, blackouts, quickLinks] = await env.DB.batch([
     env.DB.prepare(`SELECT properties.id, properties.street_number || ' ' || properties.street_name || ' ' || properties.street_suffix AS address,
       properties.status, hoa_phases.name AS phase,
@@ -1391,6 +1399,11 @@ async function adminDashboard(request, env) {
       FROM events ORDER BY starts_at DESC LIMIT 100`),
     env.DB.prepare(`SELECT id, title, description, category, audience, document_url AS url,
       storage_key AS storageKey, original_name AS originalName, file_size AS fileSize FROM documents ORDER BY category, title`),
+    env.DB.prepare(`SELECT document_categories.id, document_categories.name,
+      document_categories.sort_order AS sortOrder, document_categories.is_standard AS isStandard,
+      (SELECT COUNT(*) FROM documents
+        WHERE documents.category = document_categories.name COLLATE NOCASE) AS documentCount
+      FROM document_categories ORDER BY document_categories.sort_order, document_categories.name`),
     env.DB.prepare(`SELECT clubhouse_reservations.id, clubhouse_reservations.event_name AS eventName,
       clubhouse_reservations.starts_at AS startsAt, clubhouse_reservations.ends_at AS endsAt,
       clubhouse_reservations.attendee_count AS attendeeCount, clubhouse_reservations.event_type AS eventType,
@@ -1458,7 +1471,8 @@ async function adminDashboard(request, env) {
   }, {})
   return json({ properties: fullAdmin ? properties.results : [], phases: fullAdmin ? phases.results : [],
     announcements: fullAdmin ? announcements.results : [], events: fullAdmin ? events.results : [],
-    documents: fullAdmin ? documents.results : [], reservations: canViewReservations ? reservations.results : [],
+    documents: fullAdmin ? documents.results : [], documentCategories: fullAdmin ? documentCategories.results : [],
+    reservations: canViewReservations ? reservations.results : [],
     messages: messages.results.map((message) => ({ ...message, replies: repliesByMessage[message.id] || [] })),
     photos: fullAdmin ? photos.results : [], guests: fullAdmin ? guests.results : [],
     poolCards: fullAdmin ? poolCards.results : [], clubhouse: canManageClubhouse ? clubhouse.results[0] : null,
@@ -1993,16 +2007,82 @@ async function createEvent(request, env) {
   return json({ id }, { status: 201 })
 }
 
+async function requireDocumentCategory(env, value) {
+  const requested = cleanText(value || 'General', 80, true)
+  const category = await env.DB.prepare(`SELECT name FROM document_categories
+    WHERE name = ?1 COLLATE NOCASE`).bind(requested).first()
+  if (!category) throw new ResponseError('Select a valid document category.', 400)
+  return category.name
+}
+
+function documentCategorySortOrder(value) {
+  const order = Number(value)
+  if (!Number.isInteger(order) || order < 0 || order > 9999) {
+    throw new ResponseError('Category display order must be a whole number from 0 to 9999.', 400)
+  }
+  return order
+}
+
+async function createDocumentCategory(request, env) {
+  await requireAdmin(request, env)
+  const body = await readJson(request)
+  const name = cleanText(body.name, 80, true)
+  const sortOrder = documentCategorySortOrder(body.sortOrder ?? 100)
+  const existing = await env.DB.prepare(`SELECT id FROM document_categories
+    WHERE name = ?1 COLLATE NOCASE`).bind(name).first()
+  if (existing) throw new ResponseError('A document category with that name already exists.', 409)
+  const id = crypto.randomUUID()
+  await env.DB.prepare(`INSERT INTO document_categories (id, name, sort_order)
+    VALUES (?1, ?2, ?3)`).bind(id, name, sortOrder).run()
+  return json({ id }, { status: 201 })
+}
+
+async function updateDocumentCategory(request, env, id) {
+  await requireAdmin(request, env)
+  const existing = await env.DB.prepare(`SELECT name, is_standard AS isStandard
+    FROM document_categories WHERE id = ?1`).bind(id).first()
+  if (!existing) throw new ResponseError('Document category not found.', 404)
+  if (existing.isStandard) throw new ResponseError('Standard document categories cannot be renamed.', 409)
+  const body = await readJson(request)
+  const name = cleanText(body.name, 80, true)
+  const sortOrder = documentCategorySortOrder(body.sortOrder ?? 100)
+  const duplicate = await env.DB.prepare(`SELECT id FROM document_categories
+    WHERE name = ?1 COLLATE NOCASE AND id <> ?2`).bind(name, id).first()
+  if (duplicate) throw new ResponseError('A document category with that name already exists.', 409)
+  await env.DB.batch([
+    env.DB.prepare(`UPDATE document_categories SET name = ?1, sort_order = ?2,
+      updated_at = CURRENT_TIMESTAMP WHERE id = ?3`).bind(name, sortOrder, id),
+    env.DB.prepare(`UPDATE documents SET category = ?1, updated_at = CURRENT_TIMESTAMP
+      WHERE category = ?2 COLLATE NOCASE`).bind(name, existing.name),
+  ])
+  return json({ status: 'updated' })
+}
+
+async function deleteDocumentCategory(request, env, id) {
+  await requireAdmin(request, env)
+  const category = await env.DB.prepare(`SELECT name, is_standard AS isStandard,
+    (SELECT COUNT(*) FROM documents WHERE documents.category = document_categories.name COLLATE NOCASE) AS documentCount
+    FROM document_categories WHERE id = ?1`).bind(id).first()
+  if (!category) throw new ResponseError('Document category not found.', 404)
+  if (category.isStandard) throw new ResponseError('Standard document categories cannot be deleted.', 409)
+  if (category.documentCount > 0) {
+    throw new ResponseError('Move or delete the documents in this category before deleting it.', 409)
+  }
+  await env.DB.prepare('DELETE FROM document_categories WHERE id = ?1').bind(id).run()
+  return json({ status: 'deleted' })
+}
+
 async function createDocument(request, env) {
   const admin = await requireAdmin(request, env)
   const body = await readJson(request)
   const audience = ['public', 'members'].includes(body.audience) ? body.audience : 'members'
   const url = cleanText(body.url, 1000, true)
   if (!/^https:\/\//i.test(url)) throw new ResponseError('Document links must use HTTPS.', 400)
+  const category = await requireDocumentCategory(env, body.category)
   const id = crypto.randomUUID()
   await env.DB.prepare(`INSERT INTO documents (id, title, description, document_url, category, audience, created_by)
     VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)`).bind(id, cleanText(body.title, 140, true), cleanText(body.description, 1000),
-    url, cleanText(body.category || 'General', 80, true), audience, admin.id).run()
+    url, category, audience, admin.id).run()
   return json({ id }, { status: 201 })
 }
 
@@ -2011,7 +2091,7 @@ function safeFileName(value) {
   return name || 'document'
 }
 
-async function readDocumentForm(request) {
+async function readDocumentForm(request, env) {
   const contentLength = Number(request.headers.get('content-length'))
   if (!Number.isFinite(contentLength) || contentLength <= 0 || contentLength > MAX_DOCUMENT_BYTES + 65536) {
     throw new ResponseError('Files must be 15 MB or smaller.', 413)
@@ -2026,14 +2106,14 @@ async function readDocumentForm(request) {
     file,
     title: cleanText(form.get('title'), 140, true),
     description: cleanText(form.get('description'), 1000),
-    category: cleanText(form.get('category') || 'General', 80, true),
+    category: await requireDocumentCategory(env, form.get('category')),
     audience,
   }
 }
 
 async function uploadDocument(request, env) {
   const admin = await requireAdmin(request, env)
-  const input = await readDocumentForm(request)
+  const input = await readDocumentForm(request, env)
   const id = crypto.randomUUID()
   const originalName = safeFileName(input.file.name)
   const extension = originalName.includes('.') ? originalName.slice(originalName.lastIndexOf('.')).toLowerCase().replace(/[^.a-z0-9]/g, '') : ''
@@ -2058,7 +2138,7 @@ async function replaceDocument(request, env, id) {
   const admin = await requireAdmin(request, env)
   const existing = await env.DB.prepare('SELECT storage_key AS storageKey FROM documents WHERE id = ?1').bind(id).first()
   if (!existing) throw new ResponseError('Document not found.', 404)
-  const input = await readDocumentForm(request)
+  const input = await readDocumentForm(request, env)
   const originalName = safeFileName(input.file.name)
   const extension = originalName.includes('.') ? originalName.slice(originalName.lastIndexOf('.')).toLowerCase().replace(/[^.a-z0-9]/g, '') : ''
   const storageKey = `documents/${id}/${crypto.randomUUID()}${extension}`
@@ -2357,6 +2437,7 @@ async function updateDocument(request, env, id) {
   await requireAdmin(request, env)
   const body = await readJson(request)
   const audience = ['public', 'members'].includes(body.audience) ? body.audience : 'members'
+  const category = await requireDocumentCategory(env, body.category)
   const existing = await env.DB.prepare(`SELECT document_url AS documentUrl, storage_key AS storageKey
     FROM documents WHERE id = ?1`).bind(id).first()
   if (!existing) throw new ResponseError('Document not found.', 404)
@@ -2365,7 +2446,7 @@ async function updateDocument(request, env, id) {
   const result = await env.DB.prepare(`UPDATE documents SET title = ?1, description = ?2, document_url = ?3,
     category = ?4, audience = ?5, updated_at = CURRENT_TIMESTAMP WHERE id = ?6`)
     .bind(cleanText(body.title, 140, true), cleanText(body.description, 1000), url,
-      cleanText(body.category || 'General', 80, true), audience, id).run()
+      category, audience, id).run()
   if (!result.meta.changes) throw new ResponseError('Document not found.', 404)
   return json({ status: 'updated' })
 }
@@ -3258,6 +3339,7 @@ async function handleApi(request, env) {
   if (request.method === 'POST' && url.pathname === '/api/admin/announcements') return createAnnouncement(request, env)
   if (request.method === 'POST' && url.pathname === '/api/admin/quick-links') return createQuickLink(request, env)
   if (request.method === 'POST' && url.pathname === '/api/admin/events') return createEvent(request, env)
+  if (request.method === 'POST' && url.pathname === '/api/admin/document-categories') return createDocumentCategory(request, env)
   if (request.method === 'POST' && url.pathname === '/api/admin/documents') return createDocument(request, env)
   if (request.method === 'POST' && url.pathname === '/api/admin/documents/upload') return uploadDocument(request, env)
   if (request.method === 'POST' && url.pathname === '/api/admin/governing-documents') return createGoverningDocument(request, env)
@@ -3294,6 +3376,9 @@ async function handleApi(request, env) {
   const documentMatch = url.pathname.match(/^\/api\/admin\/documents\/([^/]+)$/)
   if (documentMatch && request.method === 'PATCH') return updateDocument(request, env, documentMatch[1])
   if (documentMatch && request.method === 'DELETE') return deleteDocument(request, env, documentMatch[1])
+  const documentCategoryMatch = url.pathname.match(/^\/api\/admin\/document-categories\/([^/]+)$/)
+  if (documentCategoryMatch && request.method === 'PATCH') return updateDocumentCategory(request, env, documentCategoryMatch[1])
+  if (documentCategoryMatch && request.method === 'DELETE') return deleteDocumentCategory(request, env, documentCategoryMatch[1])
   const documentUploadMatch = url.pathname.match(/^\/api\/admin\/documents\/([^/]+)\/upload$/)
   if (documentUploadMatch && request.method === 'PUT') return replaceDocument(request, env, documentUploadMatch[1])
   const governingDocumentMatch = url.pathname.match(/^\/api\/admin\/governing-documents\/([^/]+)$/)

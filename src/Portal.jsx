@@ -163,12 +163,56 @@ function PaidInvoiceHistory({ invoices }) {
   </section>
 }
 
+function DocumentLibrary({ documents, categories }) {
+  const [selectedCategory, setSelectedCategory] = useState('all')
+  const knownNames = new Set(categories.map((category) => category.name.toLowerCase()))
+  const fallbackCategories = [...new Set(documents
+    .map((document) => document.category)
+    .filter((name) => name && !knownNames.has(name.toLowerCase())))]
+    .map((name) => ({ id: `legacy-${name}`, name, sortOrder: 9999 }))
+  const orderedCategories = [...categories, ...fallbackCategories]
+    .sort((left, right) => Number(left.sortOrder) - Number(right.sortOrder) || left.name.localeCompare(right.name))
+  const visibleCategories = selectedCategory === 'all'
+    ? orderedCategories
+    : orderedCategories.filter((category) => category.name === selectedCategory)
+
+  return <section className="document-library">
+    <header className="document-library-header">
+      <div><p className="portal-kicker">Resident records</p><h2>Documents</h2></div>
+      <label>Category<select value={selectedCategory} onChange={(event) => setSelectedCategory(event.target.value)}>
+        <option value="all">All categories</option>
+        {orderedCategories.map((category) => <option value={category.name} key={category.id}>{category.name}</option>)}
+      </select></label>
+    </header>
+    {visibleCategories.map((category) => {
+      const categoryDocuments = documents.filter((document) => document.category.toLowerCase() === category.name.toLowerCase())
+      const isGoverning = category.name.toLowerCase() === 'governing documents'
+      if (!isGoverning && categoryDocuments.length === 0) return null
+      return <section className="document-category-group" key={category.id}>
+        <header><h3>{category.name}</h3><span>{categoryDocuments.length + (isGoverning ? 1 : 0)}</span></header>
+        <div className="document-list">
+          {isGoverning && <a href="/governing-documents">
+            <div><strong>Browse governing documents</strong><small>Search and navigate published bylaws, covenants, rules, and amendments.</small></div>
+            <span>Indexed reference</span>
+          </a>}
+          {categoryDocuments.map((item) => <a href={item.url} target="_blank" rel="noreferrer" key={item.id}>
+            <div><strong>{item.title}</strong><small>{item.description || item.category}</small></div>
+            <span>Open document</span>
+          </a>)}
+        </div>
+      </section>
+    })}
+    {visibleCategories.length === 0 && <p className="empty-state">No documents match this category.</p>}
+  </section>
+}
+
 function ResidentHome({ user, onLogout }) {
   const [tab, setTab] = useState('overview')
   const [data, setData] = useState({
     announcements: [],
     events: [],
     documents: [],
+    documentCategories: [],
     reservations: [],
     messages: [],
     guests: [],
@@ -514,27 +558,7 @@ function ResidentHome({ user, onLogout }) {
           {data.duesAccount && <PaidInvoiceHistory invoices={data.duesPaidInvoices} />}
         </section>}
         {tab === 'calendar' && <CalendarView events={data.events} />}
-        {tab === 'documents' && (
-          <section className="document-list">
-            <a href="/governing-documents">
-              <div>
-                <strong>Browse governing documents</strong>
-                <small>Search and navigate published bylaws, covenants, rules, and amendments.</small>
-              </div>
-              <span>Indexed reference</span>
-            </a>
-            {data.documents.map((item) => (
-              <a href={item.url} target="_blank" rel="noreferrer" key={item.id}>
-                <div>
-                  <strong>{item.title}</strong>
-                  <small>{item.description || item.category}</small>
-                </div>
-                <span>{item.category}</span>
-              </a>
-            ))}
-            {data.documents.length === 0 && <p className="empty-state">No member documents have been added.</p>}
-          </section>
-        )}
+        {tab === 'documents' && <DocumentLibrary documents={data.documents} categories={data.documentCategories} />}
         {tab === 'pool' && (
           <section className="pool-workspace">
             <header>

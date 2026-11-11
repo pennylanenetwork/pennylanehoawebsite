@@ -87,6 +87,7 @@ export default function Admin() {
     announcements: [],
     events: [],
     documents: [],
+    documentCategories: [],
     reservations: [],
     messages: [],
     photos: [],
@@ -736,10 +737,12 @@ export default function Admin() {
         )}
 
         {tab === 'documents' && (
-          <Workspace
-            title={editing?.kind === 'document' ? 'Edit document' : 'Add document'}
-            form={
-              <form onSubmit={submitDocument}>
+          <>
+            <DocumentCategoryManager categories={data.documentCategories} onChanged={load} />
+            <Workspace
+              title={editing?.kind === 'document' ? 'Edit document' : 'Add document'}
+              form={
+                <form onSubmit={submitDocument}>
                 <label>
                   Storage
                   <select value={documentMode} disabled={editing?.kind === 'document'} onChange={(event) => setDocumentMode(event.target.value)}>
@@ -769,16 +772,20 @@ export default function Admin() {
                 )}
                 <label>
                   Category
-                  <input required value={forms.document.category} onChange={(event) => updateForm('document', 'category', event.target.value)} />
+                  <select required value={forms.document.category} onChange={(event) => updateForm('document', 'category', event.target.value)}>
+                    <option value="" disabled>Select a category</option>
+                    {data.documentCategories.map((category) => <option value={category.name} key={category.id}>{category.name}</option>)}
+                  </select>
                 </label>
                 <Audience value={forms.document.audience} onChange={(value) => updateForm('document', 'audience', value)} />
                 <FormActions editing={editing?.kind === 'document'} label={editing?.kind === 'document' ? 'Save changes' : documentMode === 'upload' ? 'Upload document' : 'Add document'} onCancel={() => stopEditing('document')} />
-              </form>
-            }
-            rows={data.documents.map((item) => (
-              <DataRow key={item.id} title={item.title} detail={`${item.category}${item.originalName ? ` | ${item.originalName}` : ''}`} meta={item.audience} actions={<RowActions onEdit={() => beginEdit('document', item)} onDelete={() => remove('documents', item.id, 'Delete this document?')} />} />
-            ))}
-          />
+                </form>
+              }
+              rows={data.documents.map((item) => (
+                <DataRow key={item.id} title={item.title} detail={`${item.category}${item.originalName ? ` | ${item.originalName}` : ''}`} meta={item.audience} actions={<RowActions onEdit={() => beginEdit('document', item)} onDelete={() => remove('documents', item.id, 'Delete this document?')} />} />
+              ))}
+            />
+          </>
         )}
 
         {tab === 'governing documents' && <GoverningDocumentsManager documents={data.governingDocuments} sourceDocuments={data.documents} onChanged={load} />}
@@ -1249,6 +1256,70 @@ function AccessWorkspace({ guests, poolCards, currentUser, onDeleteGuest }) {
       </div>
     </section>
   )
+}
+
+function DocumentCategoryManager({ categories, onChanged }) {
+  const emptyCategory = { name: '', sortOrder: 100 }
+  const [form, setForm] = useState(emptyCategory)
+  const [editingId, setEditingId] = useState(null)
+  const [error, setError] = useState('')
+
+  async function save(event) {
+    event.preventDefault()
+    setError('')
+    try {
+      await api(`/api/admin/document-categories${editingId ? `/${editingId}` : ''}`, {
+        method: editingId ? 'PATCH' : 'POST',
+        body: JSON.stringify({ ...form, sortOrder: Number(form.sortOrder) }),
+      })
+      setForm(emptyCategory)
+      setEditingId(null)
+      await onChanged()
+    } catch (requestError) {
+      setError(requestError.message)
+    }
+  }
+
+  function edit(category) {
+    setForm({ name: category.name, sortOrder: category.sortOrder })
+    setEditingId(category.id)
+    setError('')
+  }
+
+  async function removeCategory(category) {
+    if (!window.confirm(`Delete the ${category.name} category?`)) return
+    setError('')
+    try {
+      await api(`/api/admin/document-categories/${category.id}`, { method: 'DELETE' })
+      if (editingId === category.id) {
+        setForm(emptyCategory)
+        setEditingId(null)
+      }
+      await onChanged()
+    } catch (requestError) {
+      setError(requestError.message)
+    }
+  }
+
+  return <section className="document-category-manager">
+    <header>
+      <div><p className="portal-kicker">Document organization</p><h2>Categories</h2></div>
+      <p>Standard categories remain available. Add custom categories for other records as needed.</p>
+    </header>
+    {error && <p className="form-error" role="alert">{error}</p>}
+    <form onSubmit={save}>
+      <label>Category name<input required maxLength="80" value={form.name} onChange={(event) => setForm({ ...form, name: event.target.value })} /></label>
+      <label>Display order<input required min="0" max="9999" type="number" value={form.sortOrder} onChange={(event) => setForm({ ...form, sortOrder: event.target.value })} /></label>
+      <button type="submit" className="primary-button">{editingId ? 'Save category' : 'Add category'}</button>
+      {editingId && <button type="button" className="quiet-button" onClick={() => { setForm(emptyCategory); setEditingId(null); setError('') }}>Cancel</button>}
+    </form>
+    <div className="document-category-list">
+      {categories.map((category) => <article key={category.id}>
+        <div><strong>{category.name}</strong><small>{category.documentCount} document{Number(category.documentCount) === 1 ? '' : 's'}{category.isStandard ? ' · Standard' : ''}</small></div>
+        {!category.isStandard && <div className="row-actions"><button type="button" onClick={() => edit(category)}>Edit</button><button type="button" className="row-delete" onClick={() => removeCategory(category)}>Delete</button></div>}
+      </article>)}
+    </div>
+  </section>
 }
 
 function Audience({ value, onChange }) {
