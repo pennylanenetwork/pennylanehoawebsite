@@ -206,8 +206,62 @@ function DocumentLibrary({ documents, categories }) {
   </section>
 }
 
+function ResidentOverviewCards({ data, user, onOpen }) {
+  const [renderedAt] = useState(() => Date.now())
+  const activeReservations = data.reservations.filter((item) => ['pending', 'approved'].includes(item.status)
+    && new Date(item.endsAt).getTime() >= renderedAt)
+  const activeGuests = data.guests.filter((item) => item.status === 'active')
+  const openMessages = data.messages.filter((item) => item.status !== 'closed')
+  const nextEvent = data.events.find((item) => !['blackout', 'clubhouse'].includes(item.eventType))
+  const money = new Intl.NumberFormat('en-US', { style: 'currency', currency: 'USD' })
+  const cards = [
+    ...(user.residentType === 'owner' ? [{
+      tab: 'dues',
+      value: data.duesAccount ? money.format(data.duesAccount.balance) : 'Not linked',
+      label: 'Dues & invoices',
+      detail: data.duesAccount ? `${data.duesInvoices.length} open invoice${data.duesInvoices.length === 1 ? '' : 's'}` : 'QuickBooks account unavailable',
+    }] : []),
+    {
+      tab: 'reserve',
+      value: activeReservations.length,
+      label: 'Clubhouse reservations',
+      detail: activeReservations.length === 1 ? 'Pending or upcoming reservation' : 'Pending or upcoming reservations',
+    },
+    {
+      tab: 'guests',
+      value: activeGuests.length,
+      label: 'Guest registrations',
+      detail: activeGuests.length === 1 ? 'Active guest registration' : 'Active guest registrations',
+    },
+    {
+      tab: 'pool',
+      value: data.poolAgreements.length > 0 ? 'On file' : 'Needed',
+      label: 'Pool agreement',
+      detail: data.poolAgreements.length > 0 ? 'Agreement recorded for this property' : 'Review and acknowledge the pool rules',
+    },
+    {
+      tab: 'messages',
+      value: openMessages.length,
+      label: 'Messages',
+      detail: openMessages.length === 1 ? 'Open conversation' : 'Open conversations',
+    },
+    {
+      tab: 'calendar',
+      value: nextEvent ? new Intl.DateTimeFormat('en-US', { month: 'short', day: 'numeric', timeZone: 'America/Chicago' }).format(new Date(nextEvent.startsAt)) : 'None',
+      label: 'Next community event',
+      detail: nextEvent?.title || 'No upcoming events are scheduled',
+    },
+  ]
+  return <section className="overview-metrics resident-overview-metrics" aria-label="Resident account summary">
+    {cards.map((card) => <button type="button" key={card.tab} onClick={() => onOpen(card.tab)}>
+      <strong>{card.value}</strong><span>{card.label}</span><small>{card.detail}</small>
+    </button>)}
+  </section>
+}
+
 function ResidentHome({ user, onLogout }) {
   const [tab, setTab] = useState('overview')
+  const lastResidentTabBySection = useRef({})
   const [data, setData] = useState({
     announcements: [],
     events: [],
@@ -442,7 +496,31 @@ function ResidentHome({ user, onLogout }) {
     }
   }
 
-  const tabs = ['overview', ...(user.residentType === 'owner' ? ['dues'] : []), 'calendar', 'documents', 'pool', 'reserve', 'guests', 'messages', ...(user.residentType === 'owner' ? ['household'] : []), 'settings']
+  const permittedResidentTabs = ['overview', ...(user.residentType === 'owner' ? ['dues'] : []), 'calendar', 'documents', 'pool', 'reserve', 'guests', 'messages', ...(user.residentType === 'owner' ? ['household'] : []), 'settings']
+  const residentNavigation = [
+    { id: 'home', label: 'Home', items: [{ id: 'overview', label: 'Overview' }] },
+    { id: 'community', label: 'Community', items: [{ id: 'calendar', label: 'Calendar' }, { id: 'documents', label: 'Documents' }] },
+    { id: 'amenities', label: 'Amenities', items: [{ id: 'pool', label: 'Pool' }, { id: 'reserve', label: 'Clubhouse Reservations' }, { id: 'guests', label: 'Guest Registration' }] },
+    { id: 'property', label: 'My Property', items: [{ id: 'dues', label: 'Dues & Invoices' }, { id: 'household', label: 'Household Accounts' }] },
+    { id: 'messages', label: 'Messages', items: [{ id: 'messages', label: 'Resident Messages' }] },
+    { id: 'account', label: 'Account', items: [{ id: 'settings', label: 'Communication Preferences' }] },
+  ].map((section) => ({ ...section, items: section.items.filter((item) => permittedResidentTabs.includes(item.id)) }))
+    .filter((section) => section.items.length > 0)
+  const activeResidentSection = residentNavigation.find((section) => section.items.some((item) => item.id === tab)) || residentNavigation[0]
+
+  function selectResidentTab(sectionId, tabId) {
+    lastResidentTabBySection.current[sectionId] = tabId
+    setTab(tabId)
+    setError('')
+    setNotice('')
+  }
+
+  function selectResidentSection(section) {
+    const rememberedTab = lastResidentTabBySection.current[section.id]
+    const currentTab = section.items.some((item) => item.id === tab) ? tab : null
+    const nextTab = currentTab || (section.items.some((item) => item.id === rememberedTab) ? rememberedTab : section.items[0].id)
+    selectResidentTab(section.id, nextTab)
+  }
   const clubhouseMinutes = (value) => { const [hours, minutes] = String(value || '00:00').split(':').map(Number); return hours * 60 + minutes }
   const displayMinutes = (value) => { const hours = Math.floor(value / 60); const minutes = value % 60; return `${hours % 12 || 12}${minutes ? `:${String(minutes).padStart(2, '0')}` : ''} ${hours < 12 ? 'AM' : 'PM'}` }
   const opens = clubhouseMinutes(data.clubhouse?.opensAt)
@@ -476,22 +554,14 @@ function ResidentHome({ user, onLogout }) {
             </button>
           </div>
         </header>
-        <nav className="workspace-tabs" aria-label="Resident portal sections">
-          {tabs.map((item) => (
-            <button
-              type="button"
-              key={item}
-              className={tab === item ? 'active' : ''}
-              onClick={() => {
-                setTab(item)
-                setError('')
-                setNotice('')
-              }}
-            >
-              {item}
-            </button>
-          ))}
-        </nav>
+        <div className="resident-navigation">
+          <nav className="resident-primary-nav" aria-label="Resident portal areas">
+            {residentNavigation.map((section) => <button type="button" key={section.id} className={activeResidentSection?.id === section.id ? 'active' : ''} aria-current={activeResidentSection?.id === section.id ? 'page' : undefined} onClick={() => selectResidentSection(section)}>{section.label}</button>)}
+          </nav>
+          {activeResidentSection?.items.length > 1 && <nav className="resident-secondary-nav" aria-label={`${activeResidentSection.label} sections`}>
+            {activeResidentSection.items.map((item) => <button type="button" key={item.id} className={tab === item.id ? 'active' : ''} aria-current={tab === item.id ? 'page' : undefined} onClick={() => selectResidentTab(activeResidentSection.id, item.id)}>{item.label}</button>)}
+          </nav>}
+        </div>
         {notice && (
           <p className="form-notice" role="status">
             {notice}
@@ -503,7 +573,12 @@ function ResidentHome({ user, onLogout }) {
           </p>
         )}
         {tab === 'overview' && (
-          <div className="dashboard-columns">
+          <>
+            <ResidentOverviewCards data={data} user={user} onOpen={(tabId) => {
+              const section = residentNavigation.find((item) => item.items.some((child) => child.id === tabId))
+              selectResidentTab(section?.id || 'home', tabId)
+            }} />
+            <div className="dashboard-columns">
             <section>
               <h2>Announcements</h2>
               {data.announcements.map((item) => (
@@ -538,7 +613,8 @@ function ResidentHome({ user, onLogout }) {
               ))}
               {data.boardMembers.length === 0 && <p className="empty-state">The active board roster has not been published.</p>}
             </section>
-          </div>
+            </div>
+          </>
         )}
         {tab === 'dues' && user.residentType === 'owner' && <section className="dues-workspace">
           <section className="dues-summary" aria-labelledby="dues-summary-title">

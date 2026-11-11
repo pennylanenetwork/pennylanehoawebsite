@@ -6,6 +6,7 @@ This file records material changes to the Penny Lane Estates HOA website and por
 
 ### Added
 
+- Added resident overview status cards for dues and invoices, clubhouse reservations, guest registrations, pool agreements, messages, and the next community event.
 - Added administrator-defined document categories with protected standard categories for Governing Documents, HOA Meeting Agendas, HOA Meeting Minutes, Special Notices, and General records.
 - Added resident document-category filtering and organized, category-grouped document lists.
 - Added an administration overview metric showing how many active properties have at least one approved resident account, including the resulting adoption percentage.
@@ -13,6 +14,8 @@ This file records material changes to the Penny Lane Estates HOA website and por
 
 ### Changed
 
+- Reorganized the resident portal into permission-aware Home, Community, Amenities, My Property, Messages, and Account areas with contextual submenus.
+- Clarified resident navigation labels for Dues & Invoices, Clubhouse Reservations, Guest Registration, Household Accounts, and Communication Preferences.
 - Reorganized the administration navigation into permission-aware top-level areas with contextual submenus for Residents, Communications, Calendar & Amenities, Content, and Finance.
 - Clarified administration labels for Clubhouse Reservations, Guests & Pool Access, and the Document Library while preserving existing role permissions.
 - Existing document category labels are preserved and imported into the managed category list during migration.
