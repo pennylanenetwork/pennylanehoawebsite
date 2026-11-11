@@ -13,6 +13,8 @@ This file records material changes to the Penny Lane Estates HOA website and por
 
 ### Changed
 
+- Reorganized the administration navigation into permission-aware top-level areas with contextual submenus for Residents, Communications, Calendar & Amenities, Content, and Finance.
+- Clarified administration labels for Clubhouse Reservations, Guests & Pool Access, and the Document Library while preserving existing role permissions.
 - Existing document category labels are preserved and imported into the managed category list during migration.
 - Updated property summaries and adoption reporting to count approved active accounts separately from pending registration requests.
 

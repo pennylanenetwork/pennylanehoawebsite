@@ -1,4 +1,4 @@
-import { useEffect, useState } from 'react'
+import { useEffect, useRef, useState } from 'react'
 import { api } from './api.js'
 import { formatDateTime } from './dateTime.js'
 import './Portal.css'
@@ -110,6 +110,7 @@ export default function Admin() {
   const [accountQuery, setAccountQuery] = useState('')
   const [propertyEditorOpen, setPropertyEditorOpen] = useState(false)
   const [openMessageId, setOpenMessageId] = useState(null)
+  const lastAdminTabBySection = useRef({})
 
   async function load() {
     const { user: currentUser } = await api('/api/auth/session')
@@ -411,9 +412,34 @@ export default function Admin() {
   const canManageQuickBooks = user?.role === 'super_admin' || Boolean(user?.isTreasurer)
   const canViewReservations = canManageReservations || Boolean(user?.isTreasurer)
   const canViewMessages = fullAdmin || Boolean(user?.isBoardMember) || Boolean(user?.isAccMember) || Boolean(user?.isTreasurer) || Boolean(user?.isAmenitiesCoordinator)
-  const tabs = fullAdmin
+  const permittedTabs = fullAdmin
     ? ['overview', 'accounts', 'properties', 'access', 'in the know', 'quick links', 'announcements', 'events', 'documents', 'governing documents', 'photos', 'reservations', 'messages', ...(canManageQuickBooks ? ['quickbooks'] : [])]
     : [...(canViewReservations ? ['reservations'] : []), ...(canViewMessages ? ['messages'] : []), ...(canManageQuickBooks ? ['quickbooks'] : [])]
+  const adminNavigation = [
+    { id: 'overview', label: 'Overview', items: [{ id: 'overview', label: 'Dashboard' }] },
+    { id: 'residents', label: 'Residents', items: [{ id: 'accounts', label: 'Accounts' }, { id: 'properties', label: 'Properties' }] },
+    { id: 'communications', label: 'Communications', items: [{ id: 'messages', label: 'Messages' }, { id: 'announcements', label: 'Announcements' }] },
+    { id: 'amenities', label: 'Calendar & Amenities', items: [{ id: 'reservations', label: 'Clubhouse Reservations' }, { id: 'events', label: 'Events' }, { id: 'access', label: 'Guests & Pool Access' }] },
+    { id: 'content', label: 'Content', items: [{ id: 'in the know', label: 'In the Know' }, { id: 'quick links', label: 'Quick Links' }, { id: 'photos', label: 'Photos' }, { id: 'documents', label: 'Document Library' }, { id: 'governing documents', label: 'Governing Documents' }] },
+    { id: 'finance', label: 'Finance', items: [{ id: 'quickbooks', label: 'QuickBooks' }] },
+  ].map((section) => ({ ...section, items: section.items.filter((item) => permittedTabs.includes(item.id)) }))
+    .filter((section) => section.items.length > 0)
+  const activeAdminSection = adminNavigation.find((section) => section.items.some((item) => item.id === tab)) || adminNavigation[0]
+
+  function selectAdminTab(sectionId, tabId) {
+    lastAdminTabBySection.current[sectionId] = tabId
+    setTab(tabId)
+    setEditing(null)
+    setError('')
+    setNotice('')
+  }
+
+  function selectAdminSection(section) {
+    const rememberedTab = lastAdminTabBySection.current[section.id]
+    const currentTab = section.items.some((item) => item.id === tab) ? tab : null
+    const nextTab = currentTab || (section.items.some((item) => item.id === rememberedTab) ? rememberedTab : section.items[0].id)
+    selectAdminTab(section.id, nextTab)
+  }
   const normalizedPropertyQuery = propertyQuery.trim().toLowerCase()
   const visibleProperties = data.properties.filter((property) => {
     const matchesQuery = `${property.address} ${property.registeredResidentNames || ''} ${property.residentNames || ''}`.toLowerCase().includes(normalizedPropertyQuery)
@@ -461,23 +487,24 @@ export default function Admin() {
             </p>
           )}
         </header>
-        <nav className="workspace-tabs" aria-label="Administration sections">
-          {tabs.map((item) => (
-            <button
-              type="button"
-              key={item}
-              className={tab === item ? 'active' : ''}
-              onClick={() => {
-                setTab(item)
-                setEditing(null)
-                setError('')
-                setNotice('')
-              }}
-            >
-              {item}
-            </button>
-          ))}
-        </nav>
+        <div className="admin-navigation">
+          <nav className="admin-primary-nav" aria-label="Administration areas">
+            {adminNavigation.map((section) => (
+              <button
+                type="button"
+                key={section.id}
+                className={activeAdminSection?.id === section.id ? 'active' : ''}
+                aria-current={activeAdminSection?.id === section.id ? 'page' : undefined}
+                onClick={() => selectAdminSection(section)}
+              >
+                {section.label}
+              </button>
+            ))}
+          </nav>
+          {activeAdminSection?.items.length > 1 && <nav className="admin-secondary-nav" aria-label={`${activeAdminSection.label} sections`}>
+            {activeAdminSection.items.map((item) => <button type="button" key={item.id} className={tab === item.id ? 'active' : ''} aria-current={tab === item.id ? 'page' : undefined} onClick={() => selectAdminTab(activeAdminSection.id, item.id)}>{item.label}</button>)}
+          </nav>}
+        </div>
         {notice && (
           <p className="form-notice" role="status">
             {notice}
@@ -489,7 +516,10 @@ export default function Admin() {
           </p>
         )}
 
-        {tab === 'overview' && fullAdmin && <AdminOverview accounts={accounts} data={data} onOpen={setTab} />}
+        {tab === 'overview' && fullAdmin && <AdminOverview accounts={accounts} data={data} onOpen={(tabId) => {
+          const section = adminNavigation.find((item) => item.items.some((child) => child.id === tabId))
+          selectAdminTab(section?.id || 'overview', tabId)
+        }} />}
         {tab === 'quickbooks' && canManageQuickBooks && <QuickBooksPanel properties={data.properties} canControlConnection={user?.role === 'super_admin'} />}
 
         {tab === 'accounts' && (
