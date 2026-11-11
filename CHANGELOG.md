@@ -4,6 +4,15 @@ This file records material changes to the Penny Lane Estates HOA website and por
 
 ## Unreleased
 
+### Added
+
+- Added an administration overview metric showing how many active properties have at least one approved resident account, including the resulting adoption percentage.
+- Added property-list filters for properties with or without registered accounts while preserving address and resident-name search.
+
+### Changed
+
+- Updated property summaries and adoption reporting to count approved active accounts separately from pending registration requests.
+
 ## 2026-11-02
 
 ### Added

@@ -105,6 +105,7 @@ export default function Admin() {
   const [notice, setNotice] = useState('')
   const [selectedProperty, setSelectedProperty] = useState(null)
   const [propertyQuery, setPropertyQuery] = useState('')
+  const [propertyAccountFilter, setPropertyAccountFilter] = useState('all')
   const [accountQuery, setAccountQuery] = useState('')
   const [propertyEditorOpen, setPropertyEditorOpen] = useState(false)
   const [openMessageId, setOpenMessageId] = useState(null)
@@ -413,7 +414,14 @@ export default function Admin() {
     ? ['overview', 'accounts', 'properties', 'access', 'in the know', 'quick links', 'announcements', 'events', 'documents', 'governing documents', 'photos', 'reservations', 'messages', ...(canManageQuickBooks ? ['quickbooks'] : [])]
     : [...(canViewReservations ? ['reservations'] : []), ...(canViewMessages ? ['messages'] : []), ...(canManageQuickBooks ? ['quickbooks'] : [])]
   const normalizedPropertyQuery = propertyQuery.trim().toLowerCase()
-  const visibleProperties = data.properties.filter((property) => `${property.address} ${property.residentNames || ''}`.toLowerCase().includes(normalizedPropertyQuery))
+  const visibleProperties = data.properties.filter((property) => {
+    const matchesQuery = `${property.address} ${property.registeredResidentNames || ''} ${property.residentNames || ''}`.toLowerCase().includes(normalizedPropertyQuery)
+    const hasRegisteredAccounts = Number(property.registeredAccountCount) > 0
+    const matchesAccountFilter = propertyAccountFilter === 'all'
+      || (propertyAccountFilter === 'with-accounts' && hasRegisteredAccounts)
+      || (propertyAccountFilter === 'without-accounts' && !hasRegisteredAccounts)
+    return matchesQuery && matchesAccountFilter
+  })
   const normalizedAccountQuery = accountQuery.trim().toLowerCase()
   const visibleAccounts = accounts.filter((account) => {
     const roles = [account.role, account.residentType, account.status,
@@ -516,6 +524,14 @@ export default function Admin() {
                 <label>
                   Find a property
                   <input type="search" placeholder="Search address or resident name" value={propertyQuery} onChange={(event) => setPropertyQuery(event.target.value)} />
+                </label>
+                <label>
+                  Registered accounts
+                  <select value={propertyAccountFilter} onChange={(event) => setPropertyAccountFilter(event.target.value)}>
+                    <option value="all">All properties</option>
+                    <option value="with-accounts">With registered accounts</option>
+                    <option value="without-accounts">Without registered accounts</option>
+                  </select>
                 </label>
                 <span>
                   {visibleProperties.length} of {data.properties.length} properties
@@ -794,6 +810,11 @@ export default function Admin() {
 }
 
 function AdminOverview({ accounts, data, onOpen }) {
+  const activeProperties = data.properties.filter((property) => property.status === 'active')
+  const registeredProperties = activeProperties.filter((property) => Number(property.registeredAccountCount) > 0)
+  const adoptionRate = activeProperties.length > 0
+    ? Math.round((registeredProperties.length / activeProperties.length) * 100)
+    : 0
   const items = [
     {
       label: 'Pending accounts',
@@ -804,6 +825,12 @@ function AdminOverview({ accounts, data, onOpen }) {
       label: 'Registered accounts',
       value: accounts.filter((item) => item.status === 'active').length,
       tab: 'accounts',
+    },
+    {
+      label: 'Properties with accounts',
+      value: `${registeredProperties.length} / ${activeProperties.length}`,
+      detail: `${adoptionRate}% adoption across active properties`,
+      tab: 'properties',
     },
     {
       label: 'Unread messages',
@@ -833,7 +860,7 @@ function AdminOverview({ accounts, data, onOpen }) {
           <button type="button" onClick={() => onOpen(item.tab)} key={item.label}>
             <strong>{item.value}</strong>
             <span>{item.label}</span>
-            <small>Open {item.tab}</small>
+            <small>{item.detail || `Open ${item.tab}`}</small>
           </button>
         ))}
       </div>
@@ -1310,11 +1337,11 @@ function PropertySummaryRow({ property, onOpen }) {
         <span className={`status status-${property.status}`}>{property.status}</span>
       </header>
       <div className="property-list-accounts">
-        <span>Associated accounts</span>
-        <strong>{property.residentNames || 'No registered accounts'}</strong>
+        <span>Registered associated accounts</span>
+        <strong>{property.registeredResidentNames || 'No registered accounts'}</strong>
       </div>
       <div className="property-list-metrics">
-        <span><strong>{property.accountCount}</strong> accounts</span>
+        <span><strong>{property.registeredAccountCount}</strong> registered accounts</span>
         <span className={property.renterCount > 0 ? 'has-renters' : ''}><strong>{property.renterCount}</strong> renters</span>
         <span><strong>{property.activeGuestCount}</strong> active guests</span>
         <span><strong>{property.pendingReservationCount}</strong> pending reservations</span>
