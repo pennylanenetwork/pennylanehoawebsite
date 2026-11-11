@@ -16,6 +16,7 @@ const emptyForms = {
     body: '',
     audience: 'members',
     notifyResidents: true,
+    notifyBrowser: false,
   },
   event: {
     title: '',
@@ -25,6 +26,7 @@ const emptyForms = {
     audience: 'members',
     eventType: 'community',
     notifyResidents: true,
+    notifyBrowser: false,
   },
   document: {
     title: '',
@@ -54,6 +56,18 @@ function localDateTime(value) {
   const date = new Date(value)
   const offset = date.getTimezoneOffset() * 60000
   return new Date(date - offset).toISOString().slice(0, 16)
+}
+
+async function deliverPushBroadcast(id, onProgress = null) {
+  for (let batch = 0; batch < 200; batch += 1) {
+    const result = await api(`/api/admin/push/broadcasts/${encodeURIComponent(id)}/deliver`, {
+      method: 'POST',
+      body: '{}',
+    })
+    if (onProgress) onProgress(result)
+    if (result.remaining === 0) return result
+  }
+  throw new Error('The browser notification is still processing. Refresh the notification history to review it.')
 }
 
 async function optimizePhoto(file) {
@@ -184,14 +198,29 @@ export default function Admin() {
       if (payload.startsAt) payload.startsAt = new Date(payload.startsAt).toISOString()
       if (payload.endsAt) payload.endsAt = new Date(payload.endsAt).toISOString()
       const isEditing = editing?.kind === kind
-      await api(`/api/admin/${endpoint}${isEditing ? `/${editing.id}` : ''}`, {
+      const result = await api(`/api/admin/${endpoint}${isEditing ? `/${editing.id}` : ''}`, {
         method: isEditing ? 'PATCH' : 'POST',
         body: JSON.stringify(payload),
       })
+      let savedNotice = 'Saved successfully.'
+      if (result.pushBroadcastId) {
+        setNotice('Saved. Sending browser notifications…')
+        try {
+          const delivery = await deliverPushBroadcast(result.pushBroadcastId)
+          savedNotice = `Saved successfully. Browser notification delivered to ${delivery.delivered} device${delivery.delivered === 1 ? '' : 's'}.`
+          if (delivery.failed || delivery.gone) savedNotice += ` ${delivery.failed} failed and ${delivery.gone} expired.`
+        } catch (pushDeliveryError) {
+          setError(`The item was saved, but browser delivery did not finish: ${pushDeliveryError.message}`)
+        }
+      } else if (result.pushError) {
+        setError('The item was saved, but its browser notification could not be queued.')
+      } else if (payload.notifyBrowser) {
+        savedNotice = 'Saved successfully. No subscribed devices matched the notification audience.'
+      }
       setForms({ ...forms, [kind]: emptyForms[kind] })
       setEditing(null)
       if (kind === 'property') setPropertyEditorOpen(false)
-      setNotice('Saved successfully.')
+      setNotice(savedNotice)
       await load()
     } catch (requestError) {
       setError(requestError.message)
@@ -413,12 +442,12 @@ export default function Admin() {
   const canViewReservations = canManageReservations || Boolean(user?.isTreasurer)
   const canViewMessages = fullAdmin || Boolean(user?.isBoardMember) || Boolean(user?.isAccMember) || Boolean(user?.isTreasurer) || Boolean(user?.isAmenitiesCoordinator)
   const permittedTabs = fullAdmin
-    ? ['overview', 'accounts', 'properties', 'access', 'in the know', 'quick links', 'announcements', 'events', 'documents', 'governing documents', 'photos', 'reservations', 'messages', ...(canManageQuickBooks ? ['quickbooks'] : [])]
+    ? ['overview', 'accounts', 'properties', 'access', 'in the know', 'quick links', 'announcements', 'events', 'documents', 'governing documents', 'photos', 'reservations', 'messages', ...(user?.role === 'super_admin' ? ['push notifications'] : []), ...(canManageQuickBooks ? ['quickbooks'] : [])]
     : [...(canViewReservations ? ['reservations'] : []), ...(canViewMessages ? ['messages'] : []), ...(canManageQuickBooks ? ['quickbooks'] : [])]
   const adminNavigation = [
     { id: 'overview', label: 'Overview', items: [{ id: 'overview', label: 'Dashboard' }] },
     { id: 'residents', label: 'Residents', items: [{ id: 'accounts', label: 'Accounts' }, { id: 'properties', label: 'Properties' }] },
-    { id: 'communications', label: 'Communications', items: [{ id: 'messages', label: 'Messages' }, { id: 'announcements', label: 'Announcements' }] },
+    { id: 'communications', label: 'Communications', items: [{ id: 'messages', label: 'Messages' }, { id: 'announcements', label: 'Announcements' }, { id: 'push notifications', label: 'Push Notifications' }] },
     { id: 'amenities', label: 'Calendar & Amenities', items: [{ id: 'reservations', label: 'Clubhouse Reservations' }, { id: 'events', label: 'Events' }, { id: 'access', label: 'Guests & Pool Access' }] },
     { id: 'content', label: 'Content', items: [{ id: 'in the know', label: 'In the Know' }, { id: 'quick links', label: 'Quick Links' }, { id: 'photos', label: 'Photos' }, { id: 'documents', label: 'Document Library' }, { id: 'governing documents', label: 'Governing Documents' }] },
     { id: 'finance', label: 'Finance', items: [{ id: 'quickbooks', label: 'QuickBooks' }] },
@@ -521,6 +550,7 @@ export default function Admin() {
           selectAdminTab(section?.id || 'overview', tabId)
         }} />}
         {tab === 'quickbooks' && canManageQuickBooks && <QuickBooksPanel properties={data.properties} canControlConnection={user?.role === 'super_admin'} />}
+        {tab === 'push notifications' && user?.role === 'super_admin' && <WebPushBroadcastPanel />}
 
         {tab === 'accounts' && (
           <section>
@@ -680,10 +710,16 @@ export default function Admin() {
                 </label>
                 <Audience value={forms.announcement.audience} onChange={(value) => updateForm('announcement', 'audience', value)} />
                 {editing?.kind !== 'announcement' && (
-                  <label className="rules-check">
-                    <input type="checkbox" checked={forms.announcement.notifyResidents} onChange={(event) => updateForm('announcement', 'notifyResidents', event.target.checked)} />
-                    <span>Email residents who subscribe to announcements.</span>
-                  </label>
+                  <>
+                    <label className="rules-check">
+                      <input type="checkbox" checked={forms.announcement.notifyResidents} onChange={(event) => updateForm('announcement', 'notifyResidents', event.target.checked)} />
+                      <span>Email residents who subscribe to announcements.</span>
+                    </label>
+                    <label className="rules-check">
+                      <input type="checkbox" checked={forms.announcement.notifyBrowser} onChange={(event) => updateForm('announcement', 'notifyBrowser', event.target.checked)} />
+                      <span>Send a browser notification to residents who enabled Web Push.</span>
+                    </label>
+                  </>
                 )}
                 <FormActions editing={editing?.kind === 'announcement'} label="Publish" onCancel={() => stopEditing('announcement')} />
               </form>
@@ -728,10 +764,16 @@ export default function Admin() {
                 </label>
                 <Audience value={forms.event.audience} onChange={(value) => updateForm('event', 'audience', value)} />
                 {editing?.kind !== 'event' && (
-                  <label className="rules-check">
-                    <input type="checkbox" checked={forms.event.notifyResidents} onChange={(event) => updateForm('event', 'notifyResidents', event.target.checked)} />
-                    <span>Email residents who subscribe to event notices.</span>
-                  </label>
+                  <>
+                    <label className="rules-check">
+                      <input type="checkbox" checked={forms.event.notifyResidents} onChange={(event) => updateForm('event', 'notifyResidents', event.target.checked)} />
+                      <span>Email residents who subscribe to event notices.</span>
+                    </label>
+                    <label className="rules-check">
+                      <input type="checkbox" checked={forms.event.notifyBrowser} onChange={(event) => updateForm('event', 'notifyBrowser', event.target.checked)} />
+                      <span>Send a browser notification to residents who enabled Web Push.</span>
+                    </label>
+                  </>
                 )}
                 <FormActions editing={editing?.kind === 'event'} label="Add event" onCancel={() => stopEditing('event')} />
               </form>
@@ -938,6 +980,184 @@ function AdminOverview({ accounts, data, onOpen }) {
       </div>
     </section>
   )
+}
+
+const pushAudienceLabels = {
+  all: 'All subscribed residents',
+  owners: 'Property owners',
+  renters: 'Renters',
+  board: 'Board members',
+  acc: 'ACC members',
+}
+
+function webPushDeviceLabel(userAgent = '') {
+  const ua = userAgent.toLowerCase()
+  let device = 'Computer'
+  if (/iphone|ipod/.test(ua)) device = 'iPhone'
+  else if (/ipad/.test(ua)) device = 'iPad'
+  else if (/android/.test(ua)) device = /mobile/.test(ua) ? 'Android phone' : 'Android tablet'
+  else if (/windows/.test(ua)) device = 'Windows computer'
+  else if (/macintosh|mac os x/.test(ua)) device = 'Mac'
+  else if (/cros/.test(ua)) device = 'Chromebook'
+  else if (/linux/.test(ua)) device = 'Linux computer'
+
+  let browser = 'Browser'
+  if (/edg\//.test(ua)) browser = 'Edge'
+  else if (/opr\/|opera/.test(ua)) browser = 'Opera'
+  else if (/firefox\//.test(ua)) browser = 'Firefox'
+  else if (/crios\//.test(ua)) browser = 'Chrome'
+  else if (/chrome\//.test(ua)) browser = 'Chrome'
+  else if (/safari\//.test(ua)) browser = 'Safari'
+  return `${browser} on ${device}`
+}
+
+function webPushDeviceHealth(device) {
+  if (Number(device.failureCount) > 0) return `${device.failureCount} delivery failure${Number(device.failureCount) === 1 ? '' : 's'}`
+  if (device.lastSuccessAt) return `Last delivered ${dateTime(device.lastSuccessAt)}`
+  return 'Waiting for first successful delivery'
+}
+
+function WebPushBroadcastPanel() {
+  const emptyForm = { title: '', body: '', audience: 'all', destination: '/portal' }
+  const [form, setForm] = useState(emptyForm)
+  const [record, setRecord] = useState({ broadcasts: [], subscriberCount: 0 })
+  const [devices, setDevices] = useState([])
+  const [deviceSearch, setDeviceSearch] = useState('')
+  const [busy, setBusy] = useState(false)
+  const [progress, setProgress] = useState('')
+  const [error, setError] = useState('')
+
+  async function load() {
+    const [nextRecord, deviceRecord] = await Promise.all([
+      api('/api/admin/push/broadcasts'),
+      api('/api/admin/push/devices'),
+    ])
+    setRecord(nextRecord)
+    setDevices(deviceRecord.devices || [])
+  }
+
+  useEffect(() => {
+    let active = true
+    Promise.all([api('/api/admin/push/broadcasts'), api('/api/admin/push/devices')])
+      .then(([nextRecord, deviceRecord]) => {
+        if (active) {
+          setRecord(nextRecord)
+          setDevices(deviceRecord.devices || [])
+        }
+      })
+      .catch((requestError) => { if (active) setError(requestError.message) })
+    return () => { active = false }
+  }, [])
+
+  async function finishDelivery(id) {
+    return deliverPushBroadcast(id, (result) => {
+      setProgress(`Delivered ${result.delivered}; ${result.remaining} remaining.`)
+    })
+  }
+
+  async function submit(event) {
+    event.preventDefault()
+    if (!window.confirm(`Send this notification to ${pushAudienceLabels[form.audience].toLowerCase()}?`)) return
+    setBusy(true)
+    setError('')
+    setProgress('Creating notification…')
+    try {
+      const broadcast = await api('/api/admin/push/broadcasts', {
+        method: 'POST',
+        body: JSON.stringify({ ...form, requestId: crypto.randomUUID() }),
+      })
+      if (broadcast.status === 'empty') {
+        setProgress('No subscribed devices matched this audience.')
+      } else {
+        const result = await finishDelivery(broadcast.id)
+        setProgress(`Completed: ${result.delivered} delivered, ${result.gone} expired, and ${result.failed} failed.`)
+      }
+      setForm(emptyForm)
+      await load()
+    } catch (requestError) {
+      setError(requestError.message)
+      await load().catch(() => {})
+    }
+    setBusy(false)
+  }
+
+  async function resume(id) {
+    setBusy(true)
+    setError('')
+    try {
+      const result = await finishDelivery(id)
+      setProgress(`Completed: ${result.delivered} delivered, ${result.gone} expired, and ${result.failed} failed.`)
+      await load()
+    } catch (requestError) {
+      setError(requestError.message)
+    }
+    setBusy(false)
+  }
+
+  async function revokeDevice(device) {
+    if (!window.confirm(`Revoke ${webPushDeviceLabel(device.userAgent)} for ${device.firstName} ${device.lastName}? That device will stop receiving HOA browser notifications.`)) return
+    setBusy(true)
+    setError('')
+    try {
+      await api(`/api/admin/push/devices/${encodeURIComponent(device.id)}`, { method: 'DELETE' })
+      setProgress(`Notification access was removed from ${device.firstName} ${device.lastName}'s device.`)
+      await load()
+    } catch (requestError) {
+      setError(requestError.message)
+    }
+    setBusy(false)
+  }
+
+  const search = deviceSearch.trim().toLowerCase()
+  const filteredDevices = devices.filter((device) => !search || [
+    device.firstName, device.lastName, device.email, device.address,
+    webPushDeviceLabel(device.userAgent), device.residentType,
+  ].some((value) => String(value || '').toLowerCase().includes(search)))
+
+  return <div className="push-admin-workspace"><Workspace
+    title="Send browser notification"
+    form={<form onSubmit={submit}>
+      <p className="form-context">Notifications go only to devices where a resident has enabled browser notifications. Keep the message brief and place details inside the portal.</p>
+      <label>Title<input required maxLength="100" value={form.title} onChange={(event) => setForm({ ...form, title: event.target.value })} /></label>
+      <label>Message<textarea required maxLength="240" value={form.body} onChange={(event) => setForm({ ...form, body: event.target.value })} /><span>{form.body.length} of 240 characters</span></label>
+      <label>Audience<select value={form.audience} onChange={(event) => setForm({ ...form, audience: event.target.value })}>
+        {Object.entries(pushAudienceLabels).map(([value, label]) => <option value={value} key={value}>{label}</option>)}
+      </select></label>
+      <label>Open when selected<select value={form.destination} onChange={(event) => setForm({ ...form, destination: event.target.value })}>
+        <option value="/portal">Resident overview</option>
+        <option value="/portal?tab=calendar">Community calendar</option>
+        <option value="/portal?tab=messages">Resident messages</option>
+        <option value="/portal?tab=documents">Document library</option>
+      </select></label>
+      {progress && <p className="form-notice" role="status">{progress}</p>}
+      {error && <p className="form-error" role="alert">{error}</p>}
+      <button className="primary-button" disabled={busy || record.subscriberCount === 0}>{busy ? 'Sending…' : 'Send notification'}</button>
+    </form>}
+    listHeader={<header className="push-history-header"><div><h2>Delivery history</h2><p>{record.subscriberCount} subscribed device{record.subscriberCount === 1 ? '' : 's'}</p></div></header>}
+    rows={record.broadcasts.map((item) => <DataRow
+      key={item.id}
+      title={item.title}
+      detail={`${dateTime(item.createdAt)} | ${pushAudienceLabels[item.audience] || item.audience} | ${item.deliveredCount}/${item.recipientCount} delivered${item.goneCount ? ` | ${item.goneCount} expired` : ''}${item.failedCount ? ` | ${item.failedCount} failed` : ''}`}
+      meta={item.status}
+      actions={['queued', 'sending'].includes(item.status) ? <div className="row-actions"><button type="button" disabled={busy} onClick={() => resume(item.id)}>Resume delivery</button></div> : null}
+    />)}
+  />
+    <section className="push-device-registry">
+      <header>
+        <div><p className="portal-kicker">Subscribed devices</p><h2>Registered notification devices</h2><p>Each entry is tied to a resident account. Browser privacy limits identification to the general browser and device type.</p></div>
+        <label>Find a resident, property, or device<input type="search" placeholder="Search devices" value={deviceSearch} onChange={(event) => setDeviceSearch(event.target.value)} /></label>
+      </header>
+      <div className="push-device-list">
+        {filteredDevices.map((device) => <article className="push-device-row" key={device.id}>
+          <div><strong>{device.firstName} {device.lastName}</strong><small>{device.address} | {device.email} | {device.residentType === 'tenant' ? 'Renter' : 'Owner'}</small></div>
+          <div><strong>{webPushDeviceLabel(device.userAgent)}</strong><small>Registered {dateTime(device.createdAt)}</small></div>
+          <div className={Number(device.failureCount) > 0 ? 'push-device-health has-failures' : 'push-device-health'}><span>{webPushDeviceHealth(device)}</span></div>
+          <button type="button" className="row-delete" disabled={busy} onClick={() => revokeDevice(device)}>Revoke</button>
+        </article>)}
+        {filteredDevices.length === 0 && <p className="empty-state">No matching registered devices.</p>}
+      </div>
+    </section>
+  </div>
 }
 
 function ClubhouseControls({ settings, blackouts, onSave, onAddBlackout, onDeleteBlackout }) {

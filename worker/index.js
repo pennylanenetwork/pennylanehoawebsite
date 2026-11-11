@@ -1,3 +1,5 @@
+import { buildPushPayload } from '@block65/webcrypto-web-push'
+
 const JSON_HEADERS = {
   'cache-control': 'no-store',
   'content-type': 'application/json; charset=utf-8',
@@ -833,6 +835,267 @@ async function requireUser(request, env) {
   const user = await currentUser(request, env)
   if (!user) throw new ResponseError('Authentication required.', 401)
   return user
+}
+
+function requireWebPushConfig(env) {
+  if (!env.VAPID_PUBLIC_KEY || !env.VAPID_PRIVATE_KEY) {
+    throw new ResponseError('Browser notifications are not configured yet.', 503)
+  }
+  return {
+    subject: 'mailto:board@pennylanehoa.net',
+    publicKey: env.VAPID_PUBLIC_KEY,
+    privateKey: env.VAPID_PRIVATE_KEY,
+  }
+}
+
+export function isAllowedPushEndpoint(value) {
+  try {
+    const url = new URL(value)
+    if (url.protocol !== 'https:' || url.username || url.password) return false
+    const hostname = url.hostname.toLowerCase()
+    return hostname === 'fcm.googleapis.com'
+      || hostname === 'updates.push.services.mozilla.com'
+      || hostname.endsWith('.push.services.mozilla.com')
+      || hostname === 'web.push.apple.com'
+      || hostname.endsWith('.push.apple.com')
+  } catch {
+    return false
+  }
+}
+
+async function webPushStatus(request, env) {
+  const user = await requireUser(request, env)
+  const configured = Boolean(env.VAPID_PUBLIC_KEY && env.VAPID_PRIVATE_KEY)
+  const deviceCount = await env.DB.prepare(`SELECT COUNT(*) AS count FROM web_push_subscriptions
+    WHERE user_id = ?1`).bind(user.id).first('count')
+  return json({
+    configured,
+    publicKey: configured ? env.VAPID_PUBLIC_KEY : null,
+    deviceCount: Number(deviceCount || 0),
+  })
+}
+
+async function saveWebPushSubscription(request, env) {
+  const user = await requireUser(request, env)
+  requireWebPushConfig(env)
+  const body = await readJson(request)
+  const endpoint = cleanText(body.endpoint, 2048, true)
+  const p256dh = cleanText(body.keys?.p256dh, 512, true)
+  const auth = cleanText(body.keys?.auth, 512, true)
+  if (!isAllowedPushEndpoint(endpoint)) throw new ResponseError('This browser push service is not supported.', 400)
+  const expirationTime = body.expirationTime == null ? null : Number(body.expirationTime)
+  if (expirationTime != null && (!Number.isFinite(expirationTime) || expirationTime < Date.now())) {
+    throw new ResponseError('The browser notification subscription has expired.', 400)
+  }
+  const userAgent = cleanText(request.headers.get('user-agent'), 500)
+  await env.DB.prepare(`INSERT INTO web_push_subscriptions
+    (id, user_id, endpoint, expiration_time, p256dh_key, auth_key, user_agent)
+    VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)
+    ON CONFLICT(endpoint) DO UPDATE SET user_id = excluded.user_id,
+      expiration_time = excluded.expiration_time, p256dh_key = excluded.p256dh_key,
+      auth_key = excluded.auth_key, user_agent = excluded.user_agent,
+      updated_at = CURRENT_TIMESTAMP, failure_count = 0`)
+    .bind(crypto.randomUUID(), user.id, endpoint, expirationTime, p256dh, auth, userAgent).run()
+  return json({ status: 'subscribed' }, { status: 201 })
+}
+
+async function deleteWebPushSubscription(request, env) {
+  const user = await requireUser(request, env)
+  const body = await readJson(request)
+  const endpoint = cleanText(body.endpoint, 2048, true)
+  await env.DB.prepare('DELETE FROM web_push_subscriptions WHERE user_id = ?1 AND endpoint = ?2')
+    .bind(user.id, endpoint).run()
+  return json({ status: 'unsubscribed' })
+}
+
+async function sendPushToSubscription(env, subscription, notification, topic = 'plhoa-notification') {
+  const payload = await buildPushPayload({
+    data: notification,
+    options: { ttl: 300, urgency: 'normal', topic },
+  }, {
+    endpoint: subscription.endpoint,
+    expirationTime: subscription.expirationTime,
+    keys: { p256dh: subscription.p256dh, auth: subscription.auth },
+  }, requireWebPushConfig(env))
+  const response = await fetch(subscription.endpoint, payload)
+  if (response.ok) {
+    await env.DB.prepare(`UPDATE web_push_subscriptions SET last_success_at = CURRENT_TIMESTAMP,
+      failure_count = 0, updated_at = CURRENT_TIMESTAMP WHERE id = ?1`).bind(subscription.id).run()
+    return 'delivered'
+  }
+  if ([404, 410].includes(response.status)) {
+    await env.DB.prepare('DELETE FROM web_push_subscriptions WHERE id = ?1').bind(subscription.id).run()
+    return 'gone'
+  }
+  await env.DB.prepare(`UPDATE web_push_subscriptions SET failure_count = failure_count + 1,
+    updated_at = CURRENT_TIMESTAMP WHERE id = ?1`).bind(subscription.id).run()
+  console.error(JSON.stringify({ message: 'Web Push delivery failed', status: response.status, subscriptionId: subscription.id }))
+  return 'failed'
+}
+
+const WEB_PUSH_AUDIENCES = new Set(['all', 'owners', 'renters', 'board', 'acc'])
+
+export function webPushAudienceCondition(audience) {
+  if (audience === 'owners') return "users.resident_type = 'owner'"
+  if (audience === 'renters') return "users.resident_type = 'tenant'"
+  if (audience === 'board') return 'users.is_board_member = 1'
+  if (audience === 'acc') return 'users.is_acc_member = 1'
+  return '1 = 1'
+}
+
+export function cleanWebPushDestination(value) {
+  const destination = String(value || '/portal').trim()
+  if (!/^\/(?!\/)[A-Za-z0-9/_?&=.%+-]*$/.test(destination) || destination.length > 300) {
+    throw new ResponseError('Choose a valid destination inside the resident portal.', 400)
+  }
+  return destination
+}
+
+async function createWebPushBroadcast(env, actor, input) {
+  requireWebPushConfig(env)
+  const id = String(input.id || crypto.randomUUID())
+  if (!/^[a-zA-Z0-9-]{16,100}$/.test(id)) throw new ResponseError('Invalid notification request.', 400)
+  const existing = await env.DB.prepare(`SELECT id, status, recipient_count AS recipientCount
+    FROM web_push_broadcasts WHERE id = ?1`).bind(id).first()
+  if (existing) return existing
+  const audience = WEB_PUSH_AUDIENCES.has(input.audience) ? input.audience : 'all'
+  const sourceType = ['manual', 'announcement', 'event'].includes(input.sourceType) ? input.sourceType : 'manual'
+  const title = cleanText(input.title, 100, true)
+  const body = cleanText(input.body, 240, true)
+  const destination = cleanWebPushDestination(input.destination)
+  const sourceId = cleanText(input.sourceId, 100)
+  await env.DB.prepare(`INSERT INTO web_push_broadcasts
+    (id, title, body, destination, audience, source_type, source_id, created_by)
+    VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)`)
+    .bind(id, title, body, destination, audience, sourceType, sourceId, actor.id).run()
+  const condition = webPushAudienceCondition(audience)
+  await env.DB.prepare(`INSERT INTO web_push_deliveries
+    (id, broadcast_id, subscription_id, endpoint, expiration_time, p256dh_key, auth_key)
+    SELECT lower(hex(randomblob(16))), ?1, web_push_subscriptions.id, web_push_subscriptions.endpoint,
+      web_push_subscriptions.expiration_time, web_push_subscriptions.p256dh_key, web_push_subscriptions.auth_key
+    FROM web_push_subscriptions INNER JOIN users ON users.id = web_push_subscriptions.user_id
+    WHERE users.status = 'active' AND ${condition}`).bind(id).run()
+  const recipientCount = Number(await env.DB.prepare(`SELECT COUNT(*) AS count FROM web_push_deliveries
+    WHERE broadcast_id = ?1`).bind(id).first('count') || 0)
+  await env.DB.batch([
+    env.DB.prepare(`UPDATE web_push_broadcasts SET recipient_count = ?1, status = ?2,
+      completed_at = CASE WHEN ?1 = 0 THEN CURRENT_TIMESTAMP ELSE NULL END WHERE id = ?3`)
+      .bind(recipientCount, recipientCount ? 'queued' : 'empty', id),
+    env.DB.prepare(`INSERT INTO audit_log (actor_user_id, action, target_type, target_id, details_json)
+      VALUES (?1, 'web_push.broadcast_created', 'web_push_broadcast', ?2, ?3)`)
+      .bind(actor.id, id, JSON.stringify({ title, audience, sourceType, recipientCount })),
+  ])
+  return { id, status: recipientCount ? 'queued' : 'empty', recipientCount }
+}
+
+async function createManualWebPushBroadcast(request, env) {
+  const admin = await requireSuperAdmin(request, env)
+  const body = await readJson(request)
+  const broadcast = await createWebPushBroadcast(env, admin, {
+    id: body.requestId,
+    title: body.title,
+    body: body.body,
+    destination: body.destination,
+    audience: body.audience,
+    sourceType: 'manual',
+  })
+  return json(broadcast, { status: broadcast.status === 'empty' ? 200 : 201 })
+}
+
+async function webPushBroadcasts(request, env) {
+  await requireSuperAdmin(request, env)
+  const [history, subscriberCount] = await env.DB.batch([
+    env.DB.prepare(`SELECT id, title, body, destination, audience, source_type AS sourceType,
+      status, recipient_count AS recipientCount, delivered_count AS deliveredCount,
+      gone_count AS goneCount, failed_count AS failedCount, created_at AS createdAt,
+      completed_at AS completedAt FROM web_push_broadcasts ORDER BY created_at DESC LIMIT 25`),
+    env.DB.prepare('SELECT COUNT(*) AS count FROM web_push_subscriptions'),
+  ])
+  return json({ broadcasts: history.results, subscriberCount: Number(subscriberCount.results[0]?.count || 0) })
+}
+
+async function webPushDevices(request, env) {
+  await requireSuperAdmin(request, env)
+  const result = await env.DB.prepare(`SELECT web_push_subscriptions.id,
+    web_push_subscriptions.user_agent AS userAgent,
+    web_push_subscriptions.created_at AS createdAt,
+    web_push_subscriptions.updated_at AS updatedAt,
+    web_push_subscriptions.last_success_at AS lastSuccessAt,
+    web_push_subscriptions.failure_count AS failureCount,
+    users.id AS userId, users.first_name AS firstName, users.last_name AS lastName,
+    users.email, users.resident_type AS residentType,
+    properties.id AS propertyId,
+    properties.street_number || ' ' || properties.street_name || ' ' || properties.street_suffix AS address
+    FROM web_push_subscriptions
+    INNER JOIN users ON users.id = web_push_subscriptions.user_id
+    INNER JOIN properties ON properties.id = users.property_id
+    ORDER BY users.last_name COLLATE NOCASE, users.first_name COLLATE NOCASE,
+      web_push_subscriptions.created_at DESC`).all()
+  return json({ devices: result.results })
+}
+
+async function revokeWebPushDevice(request, env, subscriptionId) {
+  const admin = await requireSuperAdmin(request, env)
+  const device = await env.DB.prepare(`SELECT web_push_subscriptions.id,
+    users.first_name || ' ' || users.last_name AS residentName, users.id AS userId
+    FROM web_push_subscriptions INNER JOIN users ON users.id = web_push_subscriptions.user_id
+    WHERE web_push_subscriptions.id = ?1`).bind(subscriptionId).first()
+  if (!device) throw new ResponseError('Registered device not found.', 404)
+  await env.DB.batch([
+    env.DB.prepare('DELETE FROM web_push_subscriptions WHERE id = ?1').bind(subscriptionId),
+    env.DB.prepare(`INSERT INTO audit_log (actor_user_id, action, target_type, target_id, details_json)
+      VALUES (?1, 'web_push.device_revoked', 'user', ?2, ?3)`)
+      .bind(admin.id, device.userId, JSON.stringify({ subscriptionId, residentName: device.residentName })),
+  ])
+  return json({ status: 'revoked' })
+}
+
+async function deliverWebPushBroadcast(request, env, broadcastId) {
+  await requireAdmin(request, env)
+  requireWebPushConfig(env)
+  const broadcast = await env.DB.prepare(`SELECT id, title, body, destination, status
+    FROM web_push_broadcasts WHERE id = ?1`).bind(broadcastId).first()
+  if (!broadcast) throw new ResponseError('Browser notification not found.', 404)
+  const pending = await env.DB.prepare(`SELECT id AS deliveryId, subscription_id AS id, endpoint,
+    expiration_time AS expirationTime, p256dh_key AS p256dh, auth_key AS auth
+    FROM web_push_deliveries WHERE broadcast_id = ?1 AND status = 'pending' LIMIT 10`).bind(broadcastId).all()
+  if (pending.results.length) {
+    await env.DB.prepare("UPDATE web_push_broadcasts SET status = 'sending' WHERE id = ?1").bind(broadcastId).run()
+    const deliveryUpdates = []
+    for (const subscription of pending.results) {
+      let outcome = 'failed'
+      try {
+        outcome = await sendPushToSubscription(env, subscription, {
+          title: broadcast.title,
+          body: broadcast.body,
+          url: broadcast.destination,
+          tag: `plhoa-${broadcastId}`,
+        }, `broadcast-${broadcastId.slice(0, 20)}`)
+      } catch (error) {
+        console.error(JSON.stringify({ message: 'Web Push broadcast delivery failed', broadcastId,
+          deliveryId: subscription.deliveryId, error: error instanceof Error ? error.message : 'Unknown error' }))
+      }
+      deliveryUpdates.push(env.DB.prepare(`UPDATE web_push_deliveries SET status = ?1,
+        attempted_at = CURRENT_TIMESTAMP WHERE id = ?2`).bind(outcome, subscription.deliveryId))
+    }
+    if (deliveryUpdates.length) await env.DB.batch(deliveryUpdates)
+  }
+  const counts = await env.DB.prepare(`SELECT COUNT(*) AS total,
+    SUM(CASE WHEN status = 'pending' THEN 1 ELSE 0 END) AS remaining,
+    SUM(CASE WHEN status = 'delivered' THEN 1 ELSE 0 END) AS delivered,
+    SUM(CASE WHEN status = 'gone' THEN 1 ELSE 0 END) AS gone,
+    SUM(CASE WHEN status = 'failed' THEN 1 ELSE 0 END) AS failed
+    FROM web_push_deliveries WHERE broadcast_id = ?1`).bind(broadcastId).first()
+  const remaining = Number(counts.remaining || 0)
+  const delivered = Number(counts.delivered || 0)
+  const gone = Number(counts.gone || 0)
+  const failed = Number(counts.failed || 0)
+  const status = remaining ? 'sending' : failed || gone ? 'partial' : Number(counts.total || 0) ? 'completed' : 'empty'
+  await env.DB.prepare(`UPDATE web_push_broadcasts SET status = ?1, delivered_count = ?2,
+    gone_count = ?3, failed_count = ?4,
+    completed_at = CASE WHEN ?5 = 0 THEN CURRENT_TIMESTAMP ELSE NULL END WHERE id = ?6`)
+    .bind(status, delivered, gone, failed, remaining, broadcastId).run()
+  return json({ id: broadcastId, status, remaining, delivered, gone, failed })
 }
 
 function cleanText(value, maximum, required = false) {
@@ -1919,7 +2182,25 @@ async function createAnnouncement(request, env) {
         `<p>A new Penny Lane HOA announcement has been posted.</p><h2>${escapeHtml(title)}</h2><p>${escapeHtml(announcementBody).replace(/\n/g, '<br>')}</p><p>Sign in to the resident portal for community information and documents.</p>`, 'hoa-announcement')
     } catch (error) { console.error(JSON.stringify({ message: 'Announcement broadcast failed', announcementId: id, detail: String(error) })) }
   }
-  return json({ id }, { status: 201 })
+  let pushBroadcastId = null
+  let pushError = false
+  if (body.notifyBrowser === true) {
+    try {
+      const broadcast = await createWebPushBroadcast(env, admin, {
+        title,
+        body: announcementBody.slice(0, 240),
+        destination: '/portal',
+        audience: 'all',
+        sourceType: 'announcement',
+        sourceId: id,
+      })
+      pushBroadcastId = broadcast.status === 'empty' ? null : broadcast.id
+    } catch (error) {
+      pushError = true
+      console.error(JSON.stringify({ message: 'Announcement Web Push queue failed', announcementId: id, detail: String(error) }))
+    }
+  }
+  return json({ id, pushBroadcastId, pushError }, { status: 201 })
 }
 
 function cleanQuickLinkUrl(value) {
@@ -2004,7 +2285,25 @@ async function createEvent(request, env) {
         `<p>A new Penny Lane HOA event has been posted.</p><h2>${escapeHtml(title)}</h2><p>${escapeHtml(range.startsAt)} through ${escapeHtml(range.endsAt)}</p>${description ? `<p>${escapeHtml(description).replace(/\n/g, '<br>')}</p>` : ''}<p>Sign in to the resident portal to view the calendar.</p>`, 'hoa-event')
     } catch (error) { console.error(JSON.stringify({ message: 'Event broadcast failed', eventId: id, detail: String(error) })) }
   }
-  return json({ id }, { status: 201 })
+  let pushBroadcastId = null
+  let pushError = false
+  if (body.notifyBrowser === true) {
+    try {
+      const broadcast = await createWebPushBroadcast(env, admin, {
+        title,
+        body: description?.slice(0, 240) || 'A new HOA event has been added to the resident calendar.',
+        destination: '/portal?tab=calendar',
+        audience: 'all',
+        sourceType: 'event',
+        sourceId: id,
+      })
+      pushBroadcastId = broadcast.status === 'empty' ? null : broadcast.id
+    } catch (error) {
+      pushError = true
+      console.error(JSON.stringify({ message: 'Event Web Push queue failed', eventId: id, detail: String(error) }))
+    }
+  }
+  return json({ id, pushBroadcastId, pushError }, { status: 201 })
 }
 
 async function requireDocumentCategory(env, value) {
@@ -3306,6 +3605,9 @@ async function handleApi(request, env) {
   if (request.method === 'POST' && url.pathname === '/api/auth/code/verify') return verifyLoginCode(request, env)
   if (request.method === 'POST' && url.pathname === '/api/auth/logout') return logout(request, env)
   if (request.method === 'GET' && url.pathname === '/api/portal/dashboard') return portalDashboard(request, env)
+  if (request.method === 'GET' && url.pathname === '/api/portal/push') return webPushStatus(request, env)
+  if (request.method === 'POST' && url.pathname === '/api/portal/push') return saveWebPushSubscription(request, env)
+  if (request.method === 'DELETE' && url.pathname === '/api/portal/push') return deleteWebPushSubscription(request, env)
   if (request.method === 'GET' && url.pathname === '/api/portal/calendar') return portalCalendarMonth(request, env)
   if (request.method === 'GET' && url.pathname === '/api/portal/governing-documents') return governingDocuments(request, env, false, true)
   if (request.method === 'POST' && url.pathname === '/api/portal/governing-documents/ask') return askGoverningDocuments(request, env)
@@ -3329,6 +3631,13 @@ async function handleApi(request, env) {
   if (request.method === 'GET' && url.pathname === '/api/admin/guests.csv') return exportGuestsCsv(request, env)
   if (request.method === 'GET' && url.pathname === '/api/admin/pool-cards.csv') return exportPoolCardsCsv(request, env)
   if (request.method === 'GET' && url.pathname === '/api/admin/dashboard') return adminDashboard(request, env)
+  if (request.method === 'GET' && url.pathname === '/api/admin/push/broadcasts') return webPushBroadcasts(request, env)
+  if (request.method === 'POST' && url.pathname === '/api/admin/push/broadcasts') return createManualWebPushBroadcast(request, env)
+  if (request.method === 'GET' && url.pathname === '/api/admin/push/devices') return webPushDevices(request, env)
+  const pushDeviceMatch = url.pathname.match(/^\/api\/admin\/push\/devices\/([^/]+)$/)
+  if (pushDeviceMatch && request.method === 'DELETE') return revokeWebPushDevice(request, env, pushDeviceMatch[1])
+  const pushDeliveryMatch = url.pathname.match(/^\/api\/admin\/push\/broadcasts\/([^/]+)\/deliver$/)
+  if (pushDeliveryMatch && request.method === 'POST') return deliverWebPushBroadcast(request, env, pushDeliveryMatch[1])
   if (request.method === 'GET' && url.pathname === '/api/admin/quickbooks/start') return startQuickBooksAuth(request, env)
   if (request.method === 'GET' && url.pathname === '/api/admin/quickbooks/callback') return finishQuickBooksAuth(request, env)
   if (request.method === 'GET' && url.pathname === '/api/admin/quickbooks') return quickBooksAdminStatus(request, env)

@@ -16,6 +16,7 @@
     "db:migrate:remote": "wrangler d1 migrations apply penny-lane-hoa --remote"
   },
   "dependencies": {
+    "@block65/webcrypto-web-push": "^2.0.0",
     "react": "^19.2.8",
     "react-dom": "^19.2.8"
   },

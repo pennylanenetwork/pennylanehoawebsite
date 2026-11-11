@@ -17,6 +17,12 @@ const emptyRegistration = {
 const TURNSTILE_SITE_KEY = '0x4AAAAAAEcUDgznRsbFwnFc'
 let turnstileScript
 
+function urlBase64ToBytes(value) {
+  const padding = '='.repeat((4 - (value.length % 4)) % 4)
+  const base64 = `${value}${padding}`.replaceAll('-', '+').replaceAll('_', '/')
+  return Uint8Array.from(window.atob(base64), (character) => character.charCodeAt(0))
+}
+
 function loadTurnstile() {
   if (window.turnstile) return Promise.resolve(window.turnstile)
   if (turnstileScript) return turnstileScript
@@ -260,7 +266,12 @@ function ResidentOverviewCards({ data, user, onOpen }) {
 }
 
 function ResidentHome({ user, onLogout }) {
-  const [tab, setTab] = useState('overview')
+  const [tab, setTab] = useState(() => {
+    const requested = new URLSearchParams(window.location.search).get('tab')
+    const allowed = ['overview', 'calendar', 'documents', 'pool', 'reserve', 'guests', 'messages', 'settings',
+      ...(user.residentType === 'owner' ? ['dues', 'household'] : [])]
+    return allowed.includes(requested) ? requested : 'overview'
+  })
   const lastResidentTabBySection = useRef({})
   const [data, setData] = useState({
     announcements: [],
@@ -1080,11 +1091,109 @@ function ResidentHome({ user, onLogout }) {
               </label>
               <button className="primary-button">Save preferences</button>
             </form>
+            <BrowserNotificationSettings onNotice={setNotice} onError={setError} />
           </section>
         )}
       </main>
     </div>
   )
+}
+
+function BrowserNotificationSettings({ onNotice, onError }) {
+  const supported = 'serviceWorker' in navigator && 'PushManager' in window && 'Notification' in window
+  const [status, setStatus] = useState(null)
+  const [subscription, setSubscription] = useState(null)
+  const [busy, setBusy] = useState(false)
+
+  async function refresh() {
+    const nextStatus = await api('/api/portal/push')
+    setStatus(nextStatus)
+    if (!supported) return
+    const registration = await navigator.serviceWorker.getRegistration('/')
+    setSubscription(registration ? await registration.pushManager.getSubscription() : null)
+  }
+
+  useEffect(() => {
+    let active = true
+    api('/api/portal/push')
+      .then(async (nextStatus) => {
+        if (!active) return
+        setStatus(nextStatus)
+        if (!supported) return
+        const registration = await navigator.serviceWorker.getRegistration('/')
+        if (active) setSubscription(registration ? await registration.pushManager.getSubscription() : null)
+      })
+      .catch((requestError) => onError(requestError.message))
+    return () => { active = false }
+  }, [onError, supported])
+
+  async function enable() {
+    setBusy(true)
+    onError('')
+    onNotice('')
+    try {
+      if (!supported) throw new Error('This browser does not support Web Push notifications.')
+      if (!status?.configured || !status.publicKey) throw new Error('Browser notifications are not configured yet.')
+      const registration = await navigator.serviceWorker.register('/push-sw.js', { scope: '/' })
+      const permission = await Notification.requestPermission()
+      if (permission !== 'granted') throw new Error('Notification permission was not granted. You can change it in your browser or device settings.')
+      const current = await registration.pushManager.getSubscription()
+      const nextSubscription = current || await registration.pushManager.subscribe({
+        userVisibleOnly: true,
+        applicationServerKey: urlBase64ToBytes(status.publicKey),
+      })
+      await api('/api/portal/push', {
+        method: 'POST',
+        body: JSON.stringify(nextSubscription.toJSON()),
+      })
+      setSubscription(nextSubscription)
+      await refresh()
+      onNotice('Browser notifications are enabled on this device.')
+    } catch (requestError) {
+      onError(requestError.message)
+    }
+    setBusy(false)
+  }
+
+  async function disable() {
+    setBusy(true)
+    onError('')
+    onNotice('')
+    try {
+      if (!subscription) throw new Error('Browser notifications are not enabled on this device.')
+      await api('/api/portal/push', {
+        method: 'DELETE',
+        body: JSON.stringify({ endpoint: subscription.endpoint }),
+      })
+      await subscription.unsubscribe()
+      setSubscription(null)
+      await refresh()
+      onNotice('Browser notifications are disabled on this device.')
+    } catch (requestError) {
+      onError(requestError.message)
+    }
+    setBusy(false)
+  }
+
+  const permission = supported ? Notification.permission : 'unsupported'
+  return <section className="browser-notification-settings">
+    <h2>Browser notifications</h2>
+    <p>Receive HOA alerts on this device even when the resident portal is closed. Permission is optional and can be removed at any time.</p>
+    {!supported && <p className="push-help">This browser does not support Web Push. Try a current version of Chrome, Edge, Firefox, or Safari.</p>}
+    {supported && status && !status.configured && <p className="push-help">Browser notifications are temporarily unavailable while setup is completed.</p>}
+    {supported && status?.configured && <>
+      <dl className="account-details push-status">
+        <div><dt>This device</dt><dd>{subscription ? 'Enabled' : permission === 'denied' ? 'Blocked in device settings' : 'Not enabled'}</dd></div>
+        <div><dt>Your devices</dt><dd>{status.deviceCount} subscribed</dd></div>
+      </dl>
+      <div className="push-actions">
+        {subscription
+          ? <button type="button" className="secondary-button" disabled={busy} onClick={disable}>Disable on this device</button>
+          : <button type="button" className="primary-button" disabled={busy || permission === 'denied'} onClick={enable}>Enable on this device</button>}
+      </div>
+      <p className="push-help">On iPhone or iPad, first add the portal to your Home Screen, open it from the new icon, and then enable notifications here.</p>
+    </>}
+  </section>
 }
 
 function ResidentMessageThread({ item, dateTime, onReply, onDelete }) {

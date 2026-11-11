@@ -1,0 +1,19 @@
+{
+  "name": "Penny Lane HOA Resident Portal",
+  "short_name": "Penny Lane HOA",
+  "description": "Resident resources and notifications for Penny Lane Estates Homeowners Association.",
+  "id": "/portal",
+  "start_url": "/portal",
+  "scope": "/",
+  "display": "standalone",
+  "background_color": "#eef3f7",
+  "theme_color": "#173b63",
+  "icons": [
+    {
+      "src": "/penny-lane-favicon.png",
+      "sizes": "1254x1254",
+      "type": "image/png",
+      "purpose": "any"
+    }
+  ]
+}
