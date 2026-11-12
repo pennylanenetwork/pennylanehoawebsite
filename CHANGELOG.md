@@ -6,6 +6,10 @@ This file records material changes to the Penny Lane Estates HOA website and por
 
 ### Added
 
+- Added automatic Web Push alerts for clubhouse reservation requests, cancellations, and paid deposits to amenities coordinators and super administrators.
+- Added routed Web Push alerts for new resident messages and replies, including resident notifications when administrators respond.
+- Added voluntary SMS consent during public registration and in resident Communication Preferences, with U.S. phone normalization and timestamped opt-in/opt-out history.
+- Added a direct public registration URL for carrier review at `/portal?mode=register`.
 - Added resident overview status cards for dues and invoices, clubhouse reservations, guest registrations, pool agreements, messages, and the next community event.
 - Added administrator-defined document categories with protected standard categories for Governing Documents, HOA Meeting Agendas, HOA Meeting Minutes, Special Notices, and General records.
 - Added resident document-category filtering and organized, category-grouped document lists.
@@ -14,6 +18,8 @@ This file records material changes to the Penny Lane Estates HOA website and por
 
 ### Changed
 
+- Updated the Privacy Policy and Terms of Service with Twilio-compatible SMS disclosures, no-sharing language, STOP/HELP instructions, and a dedicated SMS Terms section.
+- Clarified browser-notification settings to describe resident message alerts and role-based clubhouse administration alerts.
 - Reorganized the resident portal into permission-aware Home, Community, Amenities, My Property, Messages, and Account areas with contextual submenus.
 - Clarified resident navigation labels for Dues & Invoices, Clubhouse Reservations, Guest Registration, Household Accounts, and Communication Preferences.
 - Reorganized the administration navigation into permission-aware top-level areas with contextual submenus for Residents, Communications, Calendar & Amenities, Content, and Finance.

@@ -93,7 +93,10 @@ async function optimizePhoto(file) {
 }
 
 export default function Admin() {
-  const [tab, setTab] = useState(() => new URLSearchParams(window.location.search).get('tab') === 'quickbooks' ? 'quickbooks' : 'overview')
+  const [tab, setTab] = useState(() => {
+    const requested = new URLSearchParams(window.location.search).get('tab')
+    return ['messages', 'quickbooks', 'reservations'].includes(requested) ? requested : 'overview'
+  })
   const [user, setUser] = useState(null)
   const [accounts, setAccounts] = useState([])
   const [data, setData] = useState({
@@ -152,8 +155,12 @@ export default function Admin() {
         setAccounts(users)
         setData({ ...dashboard, governingDocuments: governing.documents })
         if (!fullAdmin) {
-          const requestedQuickBooks = new URLSearchParams(window.location.search).get('tab') === 'quickbooks'
-          setTab(currentUser.isTreasurer && requestedQuickBooks ? 'quickbooks' : currentUser.isTreasurer && !currentUser.isAmenitiesCoordinator ? 'reservations' : currentUser.isAmenitiesCoordinator ? 'reservations' : 'messages')
+          const requestedTab = new URLSearchParams(window.location.search).get('tab')
+          const canOpenRequested = requestedTab === 'reservations' && (currentUser.isTreasurer || currentUser.isAmenitiesCoordinator)
+            || requestedTab === 'quickbooks' && currentUser.isTreasurer
+            || requestedTab === 'messages' && (currentUser.isBoardMember || currentUser.isAccMember
+              || currentUser.isTreasurer || currentUser.isAmenitiesCoordinator)
+          setTab(canOpenRequested ? requestedTab : currentUser.isTreasurer && !currentUser.isAmenitiesCoordinator ? 'reservations' : currentUser.isAmenitiesCoordinator ? 'reservations' : 'messages')
         }
       })
       .catch((requestError) => setError(requestError.message))

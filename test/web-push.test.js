@@ -1,6 +1,6 @@
 import test from 'node:test'
 import assert from 'node:assert/strict'
-import { cleanWebPushDestination, isAllowedPushEndpoint, webPushAudienceCondition } from '../worker/index.js'
+import { cleanWebPushDestination, isAllowedPushEndpoint, messagePushRecipientCondition, reservationManagerPushCondition, webPushAudienceCondition } from '../worker/index.js'
 
 test('accepts the supported browser push services', () => {
   assert.equal(isAllowedPushEndpoint('https://fcm.googleapis.com/fcm/send/example'), true)
@@ -28,4 +28,17 @@ test('allows only internal notification destinations', () => {
   assert.throws(() => cleanWebPushDestination('https://example.com'))
   assert.throws(() => cleanWebPushDestination('//example.com'))
   assert.throws(() => cleanWebPushDestination('/portal#section'))
+})
+
+test('reservation push alerts target only the amenities coordinator and super administrator', () => {
+  assert.equal(reservationManagerPushCondition(), "users.role = 'super_admin' OR users.is_amenities_coordinator = 1")
+})
+
+test('message push alerts follow category routing', () => {
+  assert.equal(messagePushRecipientCondition('general'), "users.is_board_member = 1 OR users.role = 'super_admin'")
+  assert.equal(messagePushRecipientCondition('maintenance'), "users.is_board_member = 1 OR users.role = 'super_admin'")
+  assert.equal(messagePushRecipientCondition('board'), "users.is_board_member = 1 OR users.role = 'super_admin'")
+  assert.equal(messagePushRecipientCondition('architectural'), "users.is_acc_member = 1 OR users.role = 'super_admin'")
+  assert.equal(messagePushRecipientCondition('treasurer'), "users.is_treasurer = 1 OR users.role = 'super_admin'")
+  assert.equal(messagePushRecipientCondition('amenities'), "users.is_amenities_coordinator = 1 OR users.role = 'super_admin'")
 })

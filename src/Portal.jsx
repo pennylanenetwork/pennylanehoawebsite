@@ -12,7 +12,10 @@ const emptyRegistration = {
   address: '',
   residentType: 'owner',
   poolRulesAcknowledged: false,
+  smsConsent: false,
 }
+
+const SMS_CONSENT_TEXT = 'I agree to receive recurring informational text messages from Penny Lane HOA about community announcements, events, safety, and HOA operations. Message frequency varies, typically up to 2 messages per month. Message and data rates may apply. Reply STOP to opt out or HELP for help. Consent is not a condition of residency, HOA membership, or any purchase.'
 
 const TURNSTILE_SITE_KEY = '0x4AAAAAAEcUDgznRsbFwnFc'
 let turnstileScript
@@ -322,6 +325,8 @@ function ResidentHome({ user, onLogout }) {
     notifyAnnouncements: Boolean(user.notifyAnnouncements),
     notifyEvents: Boolean(user.notifyEvents),
     notifyDirectMessages: Boolean(user.notifyDirectMessages),
+    smsConsent: Boolean(user.smsConsent),
+    smsPhone: user.phone || '',
   })
 
   async function load() {
@@ -1038,8 +1043,8 @@ function ResidentHome({ user, onLogout }) {
                 <dd>{residentTypeLabel(user.residentType)}</dd>
               </div>
             </dl>
-            <h2>Email notifications</h2>
-            <p>Choose which optional community updates are emailed to you. Account security and reservation decisions are always sent.</p>
+            <h2>Communication preferences</h2>
+            <p>Choose how you receive optional community updates. Account security and reservation decisions are always sent by email.</p>
             <form onSubmit={savePreferences}>
               <label>
                 <input
@@ -1089,9 +1094,36 @@ function ResidentHome({ user, onLogout }) {
                   <small>New meetings and community events</small>
                 </span>
               </label>
+              <div className="sms-preference">
+                <label className="sms-phone-field">
+                  Mobile number for text messages
+                  <input
+                    type="tel"
+                    autoComplete="tel"
+                    maxLength="30"
+                    value={preferences.smsPhone}
+                    onChange={(event) => setPreferences({ ...preferences, smsPhone: event.target.value })}
+                  />
+                </label>
+                <label className="rules-check">
+                  <input
+                    type="checkbox"
+                    checked={preferences.smsConsent}
+                    onChange={(event) => setPreferences({ ...preferences, smsConsent: event.target.checked })}
+                  />
+                  <span>
+                    <strong>HOA text-message notifications</strong>
+                    <small>{SMS_CONSENT_TEXT} <a href="/privacy" target="_blank">Privacy Policy</a> and <a href="/terms" target="_blank">Terms of Service</a>.</small>
+                  </span>
+                </label>
+              </div>
               <button className="primary-button">Save preferences</button>
             </form>
-            <BrowserNotificationSettings onNotice={setNotice} onError={setError} />
+            <BrowserNotificationSettings
+              administrativeAlerts={user.role === 'super_admin' || Boolean(user.isAmenitiesCoordinator)}
+              onNotice={setNotice}
+              onError={setError}
+            />
           </section>
         )}
       </main>
@@ -1099,7 +1131,7 @@ function ResidentHome({ user, onLogout }) {
   )
 }
 
-function BrowserNotificationSettings({ onNotice, onError }) {
+function BrowserNotificationSettings({ administrativeAlerts = false, onNotice, onError }) {
   const supported = 'serviceWorker' in navigator && 'PushManager' in window && 'Notification' in window
   const [status, setStatus] = useState(null)
   const [subscription, setSubscription] = useState(null)
@@ -1179,6 +1211,8 @@ function BrowserNotificationSettings({ onNotice, onError }) {
   return <section className="browser-notification-settings">
     <h2>Browser notifications</h2>
     <p>Receive HOA alerts on this device even when the resident portal is closed. Permission is optional and can be removed at any time.</p>
+    <p className="push-help">Enabled devices receive alerts when the HOA replies to your portal messages.</p>
+    {administrativeAlerts && <p className="push-help"><strong>Administrative alerts:</strong> This account will also receive clubhouse reservation request, cancellation, and deposit-payment notifications on enabled devices.</p>}
     {!supported && <p className="push-help">This browser does not support Web Push. Try a current version of Chrome, Edge, Firefox, or Safari.</p>}
     {supported && status && !status.configured && <p className="push-help">Browser notifications are temporarily unavailable while setup is completed.</p>}
     {supported && status?.configured && <>
@@ -1393,8 +1427,9 @@ function residentTypeLabel(value) {
 }
 
 export default function Portal() {
-  const initialAuthStatus = new URLSearchParams(window.location.search).get('auth')
-  const [mode, setMode] = useState('login')
+  const initialParameters = new URLSearchParams(window.location.search)
+  const initialAuthStatus = initialParameters.get('auth')
+  const [mode, setMode] = useState(initialParameters.get('mode') === 'register' ? 'register' : 'login')
   const [registration, setRegistration] = useState(emptyRegistration)
   const [login, setLogin] = useState({ email: '', code: '' })
   const [loginStage, setLoginStage] = useState('request')
@@ -1718,6 +1753,14 @@ export default function Portal() {
                   }
                 />
               </label>
+              <label className="rules-check registration-sms-consent">
+                <input
+                  type="checkbox"
+                  checked={registration.smsConsent}
+                  onChange={(event) => setRegistration({ ...registration, smsConsent: event.target.checked })}
+                />
+                <span>{SMS_CONSENT_TEXT} <a href="/privacy" target="_blank">Privacy Policy</a> and <a href="/terms" target="_blank">Terms of Service</a>.</span>
+              </label>
               <TurnstileWidget onToken={setRegistrationTurnstile} resetKey={registrationReset} />
               <button className="primary-button" disabled={busy || !registrationTurnstile}>
                 {busy ? 'Submitting...' : 'Request resident access'}
@@ -1726,7 +1769,7 @@ export default function Portal() {
           )}
         </section>
       </main>
-      <nav className="portal-legal-links" aria-label="Policies"><a href="/privacy">Privacy Policy</a><a href="/terms">Terms of Use</a></nav>
+      <nav className="portal-legal-links" aria-label="Policies"><a href="/privacy">Privacy Policy</a><a href="/terms">Terms of Service</a></nav>
     </div>
   )
 }

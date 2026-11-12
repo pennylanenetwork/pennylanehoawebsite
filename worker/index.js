@@ -24,6 +24,14 @@ const DOCUMENT_TYPES = new Set([
   'image/png',
 ])
 const GALLERY_TYPES = new Set(['image/jpeg', 'image/png', 'image/webp'])
+const SMS_CONSENT_VERSION = '2026-11-12'
+
+export function normalizeSmsPhone(value) {
+  const digits = String(value || '').replace(/\D/g, '')
+  if (digits.length === 10) return `+1${digits}`
+  if (digits.length === 11 && digits.startsWith('1')) return `+${digits}`
+  return null
+}
 
 function json(data, init = {}) {
   return new Response(JSON.stringify(data), {
@@ -251,6 +259,76 @@ async function messageRecipients(env, category) {
   return result.results.map((user) => ({ email: user.email, name: `${user.firstName} ${user.lastName}`.trim() }))
 }
 
+export function messagePushRecipientCondition(category) {
+  if (['general', 'maintenance', 'board'].includes(category)) return "users.is_board_member = 1 OR users.role = 'super_admin'"
+  if (category === 'architectural') return "users.is_acc_member = 1 OR users.role = 'super_admin'"
+  if (category === 'treasurer') return "users.is_treasurer = 1 OR users.role = 'super_admin'"
+  if (category === 'amenities') return "users.is_amenities_coordinator = 1 OR users.role = 'super_admin'"
+  return "users.role = 'super_admin'"
+}
+
+async function deliverMessagePush(env, subscriptions, notification, messageId, eventType) {
+  if (!env.VAPID_PUBLIC_KEY || !env.VAPID_PRIVATE_KEY) return
+  const outcomes = []
+  for (const subscription of subscriptions) {
+    try {
+      outcomes.push(await sendPushToSubscription(env, subscription, notification,
+        `msg-${eventType}-${messageId.slice(0, 8)}`))
+    } catch (error) {
+      outcomes.push('failed')
+      console.error(JSON.stringify({ message: 'Message Web Push failed', messageId, eventType,
+        subscriptionId: subscription.id, error: error instanceof Error ? error.message : 'Unknown error' }))
+    }
+  }
+  await env.DB.prepare(`INSERT INTO audit_log (action, target_type, target_id, details_json)
+    VALUES (?1, 'contact_message', ?2, ?3)`)
+    .bind(`web_push.message_${eventType}`, messageId, JSON.stringify({
+      eventType,
+      targeted: outcomes.length,
+      delivered: outcomes.filter((outcome) => outcome === 'delivered').length,
+      gone: outcomes.filter((outcome) => outcome === 'gone').length,
+      failed: outcomes.filter((outcome) => outcome === 'failed').length,
+    })).run()
+}
+
+async function notifyMessageStaffPush(env, messageId, category, senderName, eventType = 'new') {
+  if (!env.VAPID_PUBLIC_KEY || !env.VAPID_PRIVATE_KEY) return
+  const condition = messagePushRecipientCondition(category)
+  const result = await env.DB.prepare(`SELECT web_push_subscriptions.id, web_push_subscriptions.endpoint,
+    web_push_subscriptions.expiration_time AS expirationTime,
+    web_push_subscriptions.p256dh_key AS p256dh, web_push_subscriptions.auth_key AS auth
+    FROM web_push_subscriptions INNER JOIN users ON users.id = web_push_subscriptions.user_id
+    WHERE users.status = 'active' AND (${condition})
+    ORDER BY web_push_subscriptions.updated_at DESC LIMIT 30`).all()
+  const title = eventType === 'reply' ? 'New resident message reply' : 'New resident message'
+  const body = eventType === 'reply'
+    ? `${senderName} replied to a ${category} conversation.`
+    : `${senderName} sent a ${category} message.`
+  await deliverMessagePush(env, result.results, {
+    title,
+    body,
+    url: '/admin?tab=messages',
+    tag: `message-${eventType}-${messageId}`,
+  }, messageId, `staff-${eventType}`)
+}
+
+async function notifyResidentMessagePush(env, messageId, userId, category, eventType = 'reply') {
+  if (!userId || !env.VAPID_PUBLIC_KEY || !env.VAPID_PRIVATE_KEY) return
+  const result = await env.DB.prepare(`SELECT id, endpoint, expiration_time AS expirationTime,
+    p256dh_key AS p256dh, auth_key AS auth FROM web_push_subscriptions
+    WHERE user_id = ?1 ORDER BY updated_at DESC LIMIT 10`).bind(userId).all()
+  const title = eventType === 'deposit-retained' ? 'New clubhouse deposit message' : 'New HOA message reply'
+  const body = eventType === 'deposit-retained'
+    ? 'A clubhouse deposit decision is available in your resident messages.'
+    : `The HOA replied to your ${category} message.`
+  await deliverMessagePush(env, result.results, {
+    title,
+    body,
+    url: '/portal?tab=messages',
+    tag: `message-${eventType}-${messageId}`,
+  }, messageId, `resident-${eventType}`)
+}
+
 async function depositRecipients(env, includeBoard = false) {
   const result = await env.DB.prepare(`SELECT email, first_name AS firstName, last_name AS lastName FROM users
     WHERE status = 'active' AND (role = 'super_admin' OR is_treasurer = 1 OR is_amenities_coordinator = 1
@@ -267,6 +345,72 @@ async function reservationNotificationDetails(env, reservationId) {
     properties.street_number || ' ' || properties.street_name || ' ' || properties.street_suffix AS address
     FROM clubhouse_reservations INNER JOIN users ON users.id = clubhouse_reservations.user_id
     INNER JOIN properties ON properties.id = users.property_id WHERE clubhouse_reservations.id = ?1`).bind(reservationId).first()
+}
+
+export function reservationManagerPushCondition() {
+  return "users.role = 'super_admin' OR users.is_amenities_coordinator = 1"
+}
+
+function reservationPushDate(value) {
+  return new Intl.DateTimeFormat('en-US', {
+    timeZone: 'America/Chicago',
+    month: 'short',
+    day: 'numeric',
+    year: 'numeric',
+  }).format(new Date(value))
+}
+
+async function notifyReservationManagersPush(env, reservationId, eventType) {
+  if (!env.VAPID_PUBLIC_KEY || !env.VAPID_PRIVATE_KEY) return
+  const details = await reservationNotificationDetails(env, reservationId)
+  if (!details) return
+  const notifications = {
+    request: {
+      title: 'New clubhouse reservation request',
+      body: `${details.residentName} requested ${details.eventName} for ${reservationPushDate(details.startsAt)}.`,
+    },
+    cancelled: {
+      title: 'Clubhouse reservation cancelled',
+      body: `${details.residentName} cancelled ${details.eventName} for ${reservationPushDate(details.startsAt)}.`,
+    },
+    deposit: {
+      title: 'Clubhouse deposit paid',
+      body: `$100 deposit received for ${details.eventName} on ${reservationPushDate(details.startsAt)} (${details.residentName}).`,
+    },
+  }
+  const notification = notifications[eventType]
+  if (!notification) return
+  const condition = reservationManagerPushCondition()
+  const result = await env.DB.prepare(`SELECT web_push_subscriptions.id, web_push_subscriptions.endpoint,
+    web_push_subscriptions.expiration_time AS expirationTime,
+    web_push_subscriptions.p256dh_key AS p256dh, web_push_subscriptions.auth_key AS auth
+    FROM web_push_subscriptions INNER JOIN users ON users.id = web_push_subscriptions.user_id
+    WHERE users.status = 'active' AND (${condition})
+    ORDER BY web_push_subscriptions.updated_at DESC LIMIT 20`).all()
+  const outcomes = []
+  for (const subscription of result.results) {
+    try {
+      outcomes.push(await sendPushToSubscription(env, subscription, {
+        ...notification,
+        url: '/admin?tab=reservations',
+        tag: `clubhouse-${eventType}-${reservationId}`,
+      }, `club-${eventType}-${reservationId.slice(0, 8)}`))
+    } catch (error) {
+      outcomes.push('failed')
+      console.error(JSON.stringify({ message: 'Reservation Web Push failed', reservationId, eventType,
+        subscriptionId: subscription.id, error: error instanceof Error ? error.message : 'Unknown error' }))
+    }
+  }
+  const delivery = {
+    eventType,
+    targeted: outcomes.length,
+    delivered: outcomes.filter((outcome) => outcome === 'delivered').length,
+    gone: outcomes.filter((outcome) => outcome === 'gone').length,
+    failed: outcomes.filter((outcome) => outcome === 'failed').length,
+  }
+  await env.DB.prepare(`INSERT INTO audit_log (action, target_type, target_id, details_json)
+    VALUES (?1, 'reservation', ?2, ?3)`)
+    .bind(`web_push.reservation_${eventType}`, reservationId, JSON.stringify(delivery)).run()
 }
 
 async function notifyReservationAdmins(env, user, reservation) {
@@ -532,6 +676,8 @@ async function currentUser(request, env) {
       users.is_president AS isPresident, users.is_vice_president AS isVicePresident, users.is_secretary AS isSecretary,
       users.notify_announcements AS notifyAnnouncements, users.notify_events AS notifyEvents,
       users.notify_direct_messages AS notifyDirectMessages,
+      users.sms_consent AS smsConsent, users.sms_consented_at AS smsConsentedAt,
+      users.sms_opted_out_at AS smsOptedOutAt,
       users.property_id AS propertyId,
       properties.street_number || ' ' || properties.street_name || ' ' || properties.street_suffix AS address
     FROM sessions
@@ -1888,6 +2034,11 @@ async function createContactMessage(request, env) {
   } catch (error) {
     console.error(JSON.stringify({ message: 'Contact notification failed', contactId: id, detail: String(error) }))
   }
+  try {
+    await notifyMessageStaffPush(env, id, category, name)
+  } catch (error) {
+    console.error(JSON.stringify({ message: 'Contact Web Push failed', contactId: id, detail: String(error) }))
+  }
   return json({ id, status: 'received' }, { status: 201 })
 }
 
@@ -1919,6 +2070,11 @@ async function createResidentMessage(request, env) {
       'resident-message', { name, email: user.email })
   } catch (error) {
     console.error(JSON.stringify({ message: 'Resident message notification failed', contactId: id, detail: String(error) }))
+  }
+  try {
+    await notifyMessageStaffPush(env, id, category, name)
+  } catch (error) {
+    console.error(JSON.stringify({ message: 'Resident message Web Push failed', contactId: id, detail: String(error) }))
   }
   return json({ id, status: 'received' }, { status: 201 })
 }
@@ -2056,6 +2212,11 @@ async function replyToContactMessage(request, env, id) {
       VALUES (?1, 'message.replied', 'contact_message', ?2, ?3)`).bind(admin.id, id,
       JSON.stringify({ email: message.email, propertyId: message.propertyId, reply: reply.slice(0, 500) })),
   ])
+  try {
+    await notifyResidentMessagePush(env, id, message.userId, message.category)
+  } catch (error) {
+    console.error(JSON.stringify({ message: 'Resident reply Web Push failed', contactId: id, detail: String(error) }))
+  }
   return json({ id: replyId, status: emailStatus === 'sent' ? 'sent' : 'recorded' })
 }
 
@@ -2090,6 +2251,11 @@ async function replyToResidentMessage(request, env, id) {
       .bind(crypto.randomUUID(), user.propertyId, user.id, user.email,
         `Resident reply: ${message.category}`, reply.slice(0, 500), id),
   ])
+  try {
+    await notifyMessageStaffPush(env, id, message.category, `${user.firstName} ${user.lastName}`, 'reply')
+  } catch (error) {
+    console.error(JSON.stringify({ message: 'Resident message reply Web Push failed', contactId: id, detail: String(error) }))
+  }
   return json({ id: replyId, status: 'received' }, { status: 201 })
 }
 
@@ -2793,6 +2959,11 @@ async function createReservation(request, env) {
   } catch (error) {
     console.error(JSON.stringify({ message: 'Reservation administrator notification failed', reservationId, detail: String(error) }))
   }
+  try {
+    await notifyReservationManagersPush(env, reservationId, 'request')
+  } catch (error) {
+    console.error(JSON.stringify({ message: 'Reservation request Web Push failed', reservationId, detail: String(error) }))
+  }
   return json({ id: reservationId, status: 'pending' }, { status: 201 })
 }
 
@@ -2857,6 +3028,11 @@ async function cancelReservation(request, env, reservationId) {
   const statements = [env.DB.prepare("UPDATE clubhouse_reservations SET status = 'cancelled', updated_at = CURRENT_TIMESTAMP WHERE id = ?1").bind(reservationId)]
   if (reservation.eventId) statements.push(env.DB.prepare("UPDATE events SET status = 'cancelled', updated_at = CURRENT_TIMESTAMP WHERE id = ?1").bind(reservation.eventId))
   await env.DB.batch(statements)
+  try {
+    await notifyReservationManagersPush(env, reservationId, 'cancelled')
+  } catch (error) {
+    console.error(JSON.stringify({ message: 'Reservation cancellation Web Push failed', reservationId, detail: String(error) }))
+  }
   return json({ status: 'cancelled' })
 }
 
@@ -2892,6 +3068,9 @@ async function finalizePaidReservation(env, reservationId, session) {
         `<p>A resident paid the clubhouse security deposit.</p><p><strong>Resident:</strong> ${escapeHtml(details.residentName)}<br><strong>Property:</strong> ${escapeHtml(details.address)}<br><strong>Event:</strong> ${escapeHtml(details.eventName)}<br><strong>Schedule:</strong> ${escapeHtml(details.startsAt)} through ${escapeHtml(details.endsAt)}<br><strong>Collected:</strong> $100.00<br><strong>Refundable after inspection:</strong> $96.80</p><p>The $3.20 processing fee is nonrefundable.</p>`,
         'clubhouse-deposit-paid', null, false)
     } catch (error) { console.error(JSON.stringify({ message: 'Deposit payment notification failed', reservationId, detail: String(error) })) }
+    try {
+      await notifyReservationManagersPush(env, reservationId, 'deposit')
+    } catch (error) { console.error(JSON.stringify({ message: 'Deposit payment Web Push failed', reservationId, detail: String(error) })) }
   }
 }
 
@@ -2989,6 +3168,9 @@ async function decideDeposit(request, env, reservationId) {
         `<p>The refundable portion of a clubhouse deposit was not approved for refund.</p><p><strong>Resident:</strong> ${escapeHtml(details.residentName)}<br><strong>Property:</strong> ${escapeHtml(details.address)}<br><strong>Event:</strong> ${escapeHtml(details.eventName)}<br><strong>Amount retained:</strong> $96.80<br><strong>Reason:</strong> ${escapeHtml(reason)}</p>`,
         'clubhouse-deposit-retained', null, false)
     } catch (error) { console.error(JSON.stringify({ message: 'Deposit retention notification failed', reservationId, detail: String(error) })) }
+    try {
+      await notifyResidentMessagePush(env, messageId, details.userId, 'amenities', 'deposit-retained')
+    } catch (error) { console.error(JSON.stringify({ message: 'Deposit retention Web Push failed', reservationId, detail: String(error) })) }
     return json({ status: 'forfeited' })
   }
   if (action !== 'refund') throw new ResponseError('Select refund or retain.', 400)
@@ -3017,7 +3199,10 @@ async function register(request, env) {
   const firstName = String(body.firstName || '').trim()
   const lastName = String(body.lastName || '').trim()
   const email = String(body.email || '').trim().toLowerCase()
-  const phone = String(body.phone || '').trim() || null
+  const suppliedPhone = String(body.phone || '').trim()
+  const smsConsent = body.smsConsent === true
+  const smsPhone = normalizeSmsPhone(suppliedPhone)
+  const phone = smsConsent ? smsPhone : suppliedPhone || null
   const address = String(body.address || '').trim()
   const residentType = ['owner', 'tenant'].includes(body.residentType) ? body.residentType : 'owner'
   const poolRulesAcknowledged = body.poolRulesAcknowledged === true
@@ -3025,6 +3210,7 @@ async function register(request, env) {
   if (!firstName || firstName.length > 80 || !lastName || lastName.length > 80) throw new ResponseError('Enter your first and last name.', 400)
   if (!/^\S+@\S+\.\S+$/.test(email) || email.length > 254) throw new ResponseError('Enter a valid email address.', 400)
   if (phone && phone.length > 30) throw new ResponseError('Enter a valid phone number.', 400)
+  if (smsConsent && !smsPhone) throw new ResponseError('Enter a valid 10-digit U.S. mobile number to receive text messages.', 400)
   if (!address || address.length > 160) throw new ResponseError('Enter a valid Penny Lane Estates address.', 400)
   if (residentType === 'owner' && !poolRulesAcknowledged) throw new ResponseError('Property owners must accept the pool rules and access-card guidelines.', 400)
 
@@ -3038,14 +3224,23 @@ async function register(request, env) {
   const statements = [
     env.DB.prepare(`
       INSERT INTO users (id, property_id, email, first_name, last_name, phone, resident_type,
-        password_hash, password_salt, password_iterations)
-      VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10)
-    `).bind(id, property.id, email, firstName, lastName, phone, residentType, '', '', 0),
+        password_hash, password_salt, password_iterations, sms_consent, sms_consented_at,
+        sms_consent_version)
+      VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11,
+        CASE WHEN ?11 = 1 THEN CURRENT_TIMESTAMP ELSE NULL END, ?12)
+    `).bind(id, property.id, email, firstName, lastName, phone, residentType, '', '', 0,
+      smsConsent ? 1 : 0, smsConsent ? SMS_CONSENT_VERSION : null),
     env.DB.prepare(`
       INSERT INTO audit_log (action, target_type, target_id, details_json)
       VALUES ('account.registered', 'user', ?1, ?2)
-    `).bind(id, JSON.stringify({ propertyId: property.id, residentType })),
+    `).bind(id, JSON.stringify({ propertyId: property.id, residentType, smsConsent })),
   ]
+  if (smsConsent) {
+    statements.push(env.DB.prepare(`INSERT INTO sms_consent_events
+      (id, user_id, action, phone, consent_version, source)
+      VALUES (?1, ?2, 'opt_in', ?3, ?4, 'registration')`)
+      .bind(crypto.randomUUID(), id, phone, SMS_CONSENT_VERSION))
+  }
   if (residentType === 'owner') {
     statements.push(env.DB.prepare(`INSERT INTO pool_rules_agreements
       (id, property_id, user_id, rules_version, acknowledgement_text) VALUES (?1, ?2, ?3, '2026-08-27', ?4)`)
@@ -3283,11 +3478,31 @@ async function updateNotificationPreferences(request, env) {
   const announcements = body.notifyAnnouncements === true ? 1 : 0
   const events = body.notifyEvents === true ? 1 : 0
   const directMessages = body.notifyDirectMessages === true ? 1 : 0
-  await env.DB.prepare(`UPDATE users SET notify_announcements = ?1, notify_events = ?2,
-    notify_direct_messages = ?3, updated_at = CURRENT_TIMESTAMP WHERE id = ?4`)
-    .bind(announcements, events, directMessages, user.id).run()
+  const smsConsent = body.smsConsent === true ? 1 : 0
+  const suppliedPhone = cleanText(body.smsPhone, 30)
+  const smsPhone = normalizeSmsPhone(suppliedPhone)
+  if (smsConsent && !smsPhone) throw new ResponseError('Enter a valid 10-digit U.S. mobile number before enabling text messages.', 400)
+  const storedPhone = smsConsent ? smsPhone : suppliedPhone
+  const consentChanged = smsConsent !== Number(user.smsConsent)
+  const consentPhoneChanged = smsConsent === 1 && normalizeSmsPhone(user.phone) !== smsPhone
+  const statements = [env.DB.prepare(`UPDATE users SET notify_announcements = ?1, notify_events = ?2,
+    notify_direct_messages = ?3, phone = ?4, sms_consent = ?5,
+    sms_consented_at = CASE WHEN ?5 = 1 AND (sms_consent = 0 OR COALESCE(phone, '') <> ?4)
+      THEN CURRENT_TIMESTAMP ELSE sms_consented_at END,
+    sms_opted_out_at = CASE WHEN ?5 = 0 AND sms_consent = 1
+      THEN CURRENT_TIMESTAMP ELSE sms_opted_out_at END,
+    sms_consent_version = CASE WHEN ?5 = 1 THEN ?6 ELSE sms_consent_version END,
+    updated_at = CURRENT_TIMESTAMP WHERE id = ?7`)
+    .bind(announcements, events, directMessages, storedPhone, smsConsent, SMS_CONSENT_VERSION, user.id)]
+  if (consentChanged || consentPhoneChanged) {
+    statements.push(env.DB.prepare(`INSERT INTO sms_consent_events
+      (id, user_id, action, phone, consent_version, source) VALUES (?1, ?2, ?3, ?4, ?5, 'portal_settings')`)
+      .bind(crypto.randomUUID(), user.id, smsConsent ? 'opt_in' : 'opt_out', storedPhone,
+        SMS_CONSENT_VERSION))
+  }
+  await env.DB.batch(statements)
   return json({ notifyAnnouncements: announcements, notifyEvents: events,
-    notifyDirectMessages: directMessages })
+    notifyDirectMessages: directMessages, smsConsent, smsPhone: storedPhone })
 }
 
 async function requestHouseholdMember(request, env) {
